@@ -36,6 +36,8 @@ export const diffSchema = z.object({
   hunkCount: z.number().int(),
   fileCount: z.number().int(),
   generatedPaths: z.array(z.string()),
+  /** False when the workspace directory is not inside a git repository: the diff is empty, not broken. */
+  repository: z.boolean(),
 });
 export type Diff = z.infer<typeof diffSchema>;
 

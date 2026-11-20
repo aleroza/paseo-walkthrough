@@ -44,7 +44,8 @@ export type Diff = z.infer<typeof diffSchema>;
 export const observationSchema = z.object({
   kind: z.enum(OBSERVATION_KINDS),
   note: z.string(),
-  icon: z.enum(CHAPTER_ICONS).optional(),
+  icon: z.enum(CHAPTER_ICONS),
+  importance: z.enum(STOP_IMPORTANCE),
 });
 export type Observation = z.infer<typeof observationSchema>;
 
@@ -78,6 +79,8 @@ export const documentSchema = z.object({
   focus: z.string(),
   chapters: z.array(chapterSchema),
   routine: z.array(routineNoteSchema),
+  /** The hunks of this change that no stop covers: the reader still has to read them. */
+  uncoveredHunkIds: z.array(z.string()),
   droppedAnchors: z.number().int(),
 });
 export type WalkthroughDocument = z.infer<typeof documentSchema>;

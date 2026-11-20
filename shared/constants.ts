@@ -8,8 +8,22 @@ export const PLUGIN_ID = "walkthrough";
 export const PANEL_ID = "walkthrough";
 
 export const CHAPTER_ICONS = ["bug", "wrench", "path", "flask", "doc", "gear"] as const;
+export type ChapterIcon = (typeof CHAPTER_ICONS)[number];
+
 export const STOP_IMPORTANCE = ["critical", "normal", "context"] as const;
+export type StopImportance = (typeof STOP_IMPORTANCE)[number];
+
 export const OBSERVATION_KINDS = ["decision", "cost", "limitation", "asymmetry", "unproven"] as const;
+export type ObservationKind = (typeof OBSERVATION_KINDS)[number];
+
+/** The icon an observation carries: the kind of the observation decides it. */
+export const OBSERVATION_ICONS: Record<ObservationKind, ChapterIcon> = {
+  decision: "gear",
+  cost: "path",
+  limitation: "bug",
+  asymmetry: "wrench",
+  unproven: "flask",
+};
 
 export const LANGUAGES = [
   "en",

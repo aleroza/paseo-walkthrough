@@ -34,6 +34,8 @@ interface Job {
   source: SourceRequest;
   builtHunks: ReturnType<typeof snapshotHunks> | null;
   cancelled: boolean;
+  /** The agent the model is running in, while there is one. */
+  agent: HiddenAgent | null;
 }
 
 const GENERATION_TIMEOUT_BASE_MS = 120_000;
@@ -103,6 +105,7 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
         provider,
         systemPrompt: system,
       });
+      job.agent = agent;
 
       let problems = "";
       for (let attempt = 1; attempt <= MAX_MODEL_ATTEMPTS; attempt += 1) {
@@ -135,6 +138,7 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
       job.error = message(error);
       setStage(job, "failed");
     } finally {
+      job.agent = null;
       if (agent) await agent.dispose().catch(() => undefined);
     }
   };
@@ -153,6 +157,7 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
         source: { workspaceId: request.workspaceId, scope: request.scope, commit: request.commit },
         builtHunks: null,
         cancelled: false,
+        agent: null,
       };
       jobs.set(job.id, job);
       latest.set(request.workspaceId, job.id);
@@ -188,6 +193,14 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
       if (job.state === "done" || job.state === "failed") return { cancelled: false, error: "That walkthrough has already finished." };
       job.cancelled = true;
       setStage(job, "cancelled");
+      // The model call stops in the background: the reviewer does not wait for the daemon
+      // to answer before the panel shows the job as cancelled.
+      const agent = job.agent;
+      if (agent) {
+        void agent.stop().catch((error: unknown) => {
+          console.error(`[walkthrough] the model call did not stop: ${message(error)}`);
+        });
+      }
       return { cancelled: true, error: null };
     },
   };

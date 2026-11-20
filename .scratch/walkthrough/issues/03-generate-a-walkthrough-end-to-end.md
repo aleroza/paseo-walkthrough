@@ -8,7 +8,7 @@
 
 - [x] Pressing Generate starts a background job and returns immediately; the panel polls the status and shows the current stage.
 - [x] The stages are collecting, asking, retrying, assembling, done, failed, and cancelled, and the panel renders the current one.
-- [x] The model runs in an agent the user never sees: on daemon 0.16.2 and newer the agent is created as a background agent in the workspace, on daemon 0.15.4 a background workspace is created and the agent runs inside it.
+- [x] The model runs in a hidden agent in a separate background workspace.
 - [x] The model never gets repository access: the agent works in a plugin-owned scratch directory and receives the diff in the prompt.
 - [x] Every stop names the hunks it explains, by a stable identity of scope, path, and hunk content.
 - [x] A malformed answer is retried up to two times with the validation errors as feedback; a third failure ends the job as failed with a readable message.
@@ -21,10 +21,8 @@
   `walkthrough.status` while the job runs and stops when it reaches a terminal state.
 - The job carries the states it has been in (`stages`), so the panel can show the trail and the
   test can assert the path a job took: collecting, asking, assembling, done.
-- The plugin SDK of 0.15.4 exposes no daemon version, so the plugin does not read one: it asks for
-  a background agent in the workspace and falls back to a background agent without a workspace when
-  the daemon refuses it ("background is workspace creation intent"), which is what daemon 0.15.4
-  does and what makes it create the background workspace the agent runs in.
+- The plugin sets the background flag and omits the workspace id on both supported daemon
+  versions. Paseo 0.16.2 replaces the requested working directory when a workspace id is supplied.
 - The agent works in `$PASEO_HOME/plugin-data/walkthrough/scratch/<job id>` (mode 0700) and never in
   the repository; the diff reaches it as the digest in the prompt, and the agent is archived when
   the job ends.

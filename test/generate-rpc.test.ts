@@ -130,7 +130,7 @@ function fakePaseo(directory: string, options: FakeOptions): FakePaseo {
     },
     agents: {
       create: async (agentOptions: AgentCreation) => {
-        creations.push(agentOptions);
+        creations.push(agentOptions.workspaceId ? { ...agentOptions, cwd: directory } : agentOptions);
         if (agentOptions.workspaceId && !options.backgroundAgentInWorkspace) {
           throw new Error("background is workspace creation intent; configure the selected workspace at creation.");
         }
@@ -508,7 +508,7 @@ describe("walkthrough.generate", () => {
     expect(fake.prompts[0]).toContain("h1");
   });
 
-  it("creates the hidden agent in the workspace on a daemon that allows it", async () => {
+  it("keeps the agent in scratch when the daemon can select an existing workspace", async () => {
     const repo = await createRepo();
     await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
     const { handlers } = load();
@@ -517,7 +517,7 @@ describe("walkthrough.generate", () => {
     const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
     await waitUntil(() => fake.promptCount() > 0);
 
-    expect(fake.creations[0]?.workspaceId).toBe("ws-1");
+    expect(fake.creations[0]?.workspaceId).toBeUndefined();
   });
 
   it("lets the daemon make a background workspace on a daemon that refuses a background agent in a workspace", async () => {
@@ -529,10 +529,9 @@ describe("walkthrough.generate", () => {
     const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
     await waitUntil(() => fake.promptCount() > 0);
 
-    expect(fake.creations).toHaveLength(2);
-    expect(fake.creations[0]?.workspaceId).toBe("ws-1");
-    expect(fake.creations[1]?.workspaceId).toBeUndefined();
-    expect(fake.creations[1]?.background).toBe(true);
+    expect(fake.creations).toHaveLength(1);
+    expect(fake.creations[0]?.workspaceId).toBeUndefined();
+    expect(fake.creations[0]?.background).toBe(true);
   });
 
   it("keeps a cancelled job cancelled, whatever the job was doing when the cancel landed", async () => {

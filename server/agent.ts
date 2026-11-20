@@ -1,9 +1,7 @@
 import { InvalidWalkthroughError } from "./document";
-import type { PaseoAgentCreateOptions, PaseoAgentHandle, PaseoApi } from "./host-types";
+import type { PaseoApi } from "./host-types";
 
 export interface HiddenAgentRequest {
-  /** The workspace the reviewer is looking at. */
-  workspaceId: string;
   /** A plugin-owned directory: the model never works in the repository. */
   cwd: string;
   /** The provider and model, "provider/model". */
@@ -19,34 +17,13 @@ export interface HiddenAgent {
   dispose(): Promise<void>;
 }
 
-/**
- * Daemon 0.15.4 refuses a background agent that names a workspace ("background is workspace
- * creation intent; configure the selected workspace at creation.") and creates a background
- * workspace for a background agent that names none. Daemon 0.16.2 and newer accept the
- * background agent inside the workspace. The plugin SDK exposes no daemon version, so the call
- * the daemon accepts is found by asking for the newer one and falling back when it is refused.
- */
-const BACKGROUND_IN_WORKSPACE_REFUSAL = "background is workspace creation intent";
 const OPENCODE_OUTPUT_REJECTION = /^(Invalid OpenCode structured output:|OpenCode finished without submitting the required structured output)/;
-
-const refusesBackgroundInWorkspace = (error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes(BACKGROUND_IN_WORKSPACE_REFUSAL);
-};
 
 /** Creates the agent the model runs in. The reviewer never sees it: it is a background agent. */
 export async function createHiddenAgent(paseo: PaseoApi, request: HiddenAgentRequest): Promise<HiddenAgent> {
   const config = { provider: request.provider, systemPrompt: request.systemPrompt };
-  const base: PaseoAgentCreateOptions = { config, cwd: request.cwd, background: true, ...request.initialTurn };
-  const inWorkspace: PaseoAgentCreateOptions & { workspaceId: string } = { ...base, workspaceId: request.workspaceId };
-
-  let handle: PaseoAgentHandle;
-  try {
-    handle = await paseo.agents.create(inWorkspace);
-  } catch (error) {
-    if (!refusesBackgroundInWorkspace(error)) throw error;
-    handle = await paseo.agents.create(base);
-  }
+  // Paseo replaces cwd with the workspace's directory when workspaceId is set.
+  const handle = await paseo.agents.create({ config, cwd: request.cwd, background: true, ...request.initialTurn });
 
   let disposed = false;
   const dispose = async () => {

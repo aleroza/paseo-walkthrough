@@ -128,7 +128,6 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
         setStage(job, "asking");
         if (!agent) {
           agent = await createHiddenAgent(paseo, {
-            workspaceId: request.workspaceId,
             cwd,
             provider,
             systemPrompt: system,

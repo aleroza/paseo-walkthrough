@@ -124,10 +124,8 @@ answer.
   aliased h1 through hn, and generated files and lock files are filtered out. The digest, not
   the diff, is what goes into the model prompt.
 
-- The model call runs in an agent the user never sees. On daemon 0.16.2 and newer the plugin
-  creates the agent with the background flag inside the workspace. On daemon 0.15.4 the public
-  agent API rejects the background flag together with a workspace id and rejects internal
-  agents, so the plugin creates a background workspace and runs the agent inside it.
+- The model runs in a hidden background agent. The plugin supplies a scratch directory and
+  omits the workspace id so the daemon starts a separate background workspace there.
 
 - The model never gets repository access: the agent works in a plugin-owned scratch
   directory and receives the digest in the prompt.

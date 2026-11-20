@@ -9,7 +9,7 @@ import { createHiddenAgent } from "./agent";
 import { createWalkthroughCache, identifyChange } from "./cache";
 import { collectDiff } from "./diff";
 import { buildDigest } from "./digest";
-import { normalizeWalkthrough, readModelDocument } from "./document";
+import { InvalidWalkthroughError, modelOutputSchema, normalizeWalkthrough, readModelDocument } from "./document";
 import type { PaseoApi } from "./host-types";
 import { resolveModel } from "./models";
 import { buildPrompt, normalizeLanguage, retryPrompt } from "./prompt";
@@ -108,6 +108,8 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
         return;
       }
 
+      // Daemon 0.15.4 advertises no structured output flag. Both OpenCode runtimes use the same provider id.
+      const nativeOutput = /^(codex|opencode)\//.test(provider);
       const { system, prompt } = buildPrompt({
         digest: digest.digest,
         fileCount: digest.fileCount,
@@ -117,27 +119,34 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
         language,
       });
 
-      setStage(job, "asking");
-      agent = await createHiddenAgent(paseo, {
-        workspaceId: request.workspaceId,
-        cwd: await scratchDirectory(job.id),
-        provider,
-        systemPrompt: system,
-      });
-      job.agent = agent;
+      const cwd = await scratchDirectory(job.id);
 
       let problems = "";
       for (let attempt = 1; attempt <= MAX_MODEL_ATTEMPTS; attempt += 1) {
         if (job.cancelled) return;
-        const answer = await agent.ask(attempt === 1 ? prompt : retryPrompt(prompt, problems), generationTimeoutMs(digest.hunkCount));
-        if (job.cancelled) return;
-
-        setStage(job, "assembling");
+        const turnPrompt = attempt === 1 ? prompt : retryPrompt(prompt, problems);
+        setStage(job, "asking");
+        if (!agent) {
+          agent = await createHiddenAgent(paseo, {
+            workspaceId: request.workspaceId,
+            cwd,
+            provider,
+            systemPrompt: system,
+            initialTurn: nativeOutput ? { prompt: turnPrompt, outputSchema: modelOutputSchema } : undefined,
+          });
+          job.agent = agent;
+          if (job.cancelled) return;
+        }
         try {
+          const answer = await agent.ask(turnPrompt, generationTimeoutMs(digest.hunkCount));
+          if (job.cancelled) return;
+          setStage(job, "assembling");
           const document = normalizeWalkthrough(readModelDocument(answer), digest.idByAlias, digest.digest.files);
           await finish(document, false);
           return;
         } catch (error) {
+          if (job.cancelled) return;
+          if (!(error instanceof InvalidWalkthroughError)) throw error;
           problems = message(error);
           if (attempt >= MAX_MODEL_ATTEMPTS) {
             job.error = `The model did not return a usable walkthrough after ${MAX_MODEL_ATTEMPTS} attempts: ${problems}`;
@@ -145,7 +154,12 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
             return;
           }
           setStage(job, "retrying");
-          setStage(job, "asking");
+          // The pinned SDK attaches outputSchema only to the initial turn.
+          if (nativeOutput) {
+            job.agent = null;
+            await agent.dispose();
+            agent = null;
+          }
         }
       }
     } catch (error) {

@@ -17,13 +17,15 @@
 ## Comments
 
 - The choice (scope, model, language) lives in the panel state, through the host's `tab.setState` /
-  `tab.state` and the SDK's `useTabState`. The host keeps that state per workspace: the workspace
-  layout store holds `tab.state` per workspace key and persists it, so reopening the panel in the
-  same workspace restores the choice and a different workspace never sees it.
-- The server keeps a copy of the same choice under `$PASEO_HOME/plugin-data/walkthrough/settings`,
-  keyed by workspace id, through the `walkthrough.settings` and `walkthrough.settings.save`
-  contracts. The panel writes both, and a panel whose own state the host never wrote takes the
-  server's copy, so the choice survives a lost panel state.
+  `tab.state` and the SDK's `useTabState`. The host keeps that state per workspace key and per
+  tab: the workspace layout store holds `tab.state` under `layoutByWorkspace[serverId:workspaceId]`
+  and persists it, so a panel that is still open, or an app that starts again, restores the choice,
+  and a different workspace never sees it.
+- Closing the panel tab drops that state with the tab, so the server copy is the real source of
+  truth for a panel that comes back empty: the server keeps the same choice under
+  `$PASEO_HOME/plugin-data/walkthrough/settings`, keyed by workspace id, through the
+  `walkthrough.settings` and `walkthrough.settings.save` contracts. The panel writes both, and a
+  panel whose own state the host never wrote takes the server's copy.
 - `walkthrough.models` lists the models of the providers the daemon has ready, leaving out the
   ones the daemon marks as not selectable. A model is named `provider/id`, the name the daemon
   takes.
@@ -33,5 +35,6 @@
 - The language reaches the prompt: `walkthrough.generate` carries it into the job and the prompt
   adds the language instruction when it is not English, so the aliases, the icons, the importance
   values and the observation kinds stay in English.
-- The default of a workspace that chose nothing: every change, the daemon's default model of the
-  first provider that has one, and English. `AGENTS.md` records it.
+- The default of a workspace that chose nothing: every change, the daemon's default model (the
+  first provider with models ready contributes the model it marks as default, or its first model
+  when it marks none), and English. `AGENTS.md` records it.

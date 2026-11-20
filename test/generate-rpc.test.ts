@@ -167,7 +167,12 @@ interface JobStatusView {
   document: {
     title: string;
     focus: string;
-    chapters: { id: string; title: string; stops: { id: string; title: string; hunkIds: string[]; prose: string; observations: { kind: string; note: string }[] }[] }[];
+    chapters: {
+      id: string;
+      title: string;
+      icon: string;
+      stops: { id: string; title: string; hunkIds: string[]; importance: string; prose: string; observations: { kind: string; note: string }[] }[];
+    }[];
     routine: { path: string; note: string }[];
     droppedAnchors: number;
   } | null;

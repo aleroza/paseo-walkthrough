@@ -215,7 +215,9 @@ describe("walkthrough.diff", () => {
 
     expect(await readdir(join(homeRoot, "home"))).toEqual(["plugin-data"]);
     const dir = join(homeRoot, "home", "plugin-data", PLUGIN_ID);
-    expect((await stat(dir)).mode & 0o777).toBe(0o700);
+    const directory = await stat(dir);
+    expect(directory.isDirectory()).toBe(true);
+    if (process.platform !== "win32") expect(directory.mode & 0o777).toBe(0o700);
   });
 
   it("is registered with Paseo under the id walkthrough", async () => {

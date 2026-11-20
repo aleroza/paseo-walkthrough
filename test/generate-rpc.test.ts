@@ -195,6 +195,7 @@ const waitUntil = async (ready: () => boolean) => {
 
 interface JobStatusView {
   job: { id: string; state: string; stages: string[]; error: string | null } | null;
+  staleness: { stale: boolean } | null;
   document: {
     title: string;
     focus: string;
@@ -257,7 +258,9 @@ const modelAnswer = (aliases: string[], title = "The change") =>
 describe("walkthrough cache", () => {
   it("restores the workspace's document on reload and fulfills the same request without asking the model again", async () => {
     const repo = await createRepo();
-    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    const path = join(repo, "app.ts");
+    const initialChange = "const a = 1;\nconst b = 22;\nconst c = 3;\n";
+    await writeFile(path, initialChange);
     const first = load();
     const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
     const request = { workspaceId: "ws-1", scope: "all" };
@@ -271,9 +274,16 @@ describe("walkthrough cache", () => {
     const restore = handlerFor(reopened.handlers, statusRpc.name);
     const restored = (await restore({ workspaceId: "ws-1", jobId: null }, { paseo: fake.paseo })) as JobStatusView;
     expect(restored.document?.title).toBe("The change");
+    expect(restored.staleness?.stale).toBe(false);
     const other = (await restore({ workspaceId: "ws-2", jobId: null }, { paseo: fake.paseo })) as JobStatusView;
     expect(other.document).toBeNull();
 
+    await writeFile(path, "const a = 1;\nconst b = 23;\nconst c = 3;\n");
+    const stale = (await restore({ workspaceId: "ws-1", jobId: null }, { paseo: fake.paseo })) as JobStatusView;
+    expect(stale.document?.title).toBe("The change");
+    expect(stale.staleness?.stale).toBe(true);
+
+    await writeFile(path, initialChange);
     const reused = (await handlerFor(reopened.handlers, generateRpc.name)(request, { paseo: fake.paseo })) as { jobId: string };
     const hit = await waitForTerminal(reopened.handlers, fake.paseo, reused.jobId);
     expect(hit.job?.state).toBe("done");

@@ -13,6 +13,7 @@ import { normalizeWalkthrough, readModelDocument } from "./document";
 import type { PaseoApi } from "./host-types";
 import { resolveModel } from "./models";
 import { buildPrompt, normalizeLanguage, retryPrompt } from "./prompt";
+import { readStaleness, snapshotHunks } from "./staleness";
 import { resolveWorkspaceDirectory } from "./workspace";
 
 export interface GenerationRequest {
@@ -32,6 +33,7 @@ interface Job {
   startedAt: number;
   document: WalkthroughDocument | null;
   source: WalkthroughSource;
+  builtHunks: ReturnType<typeof snapshotHunks> | null;
   cancelled: boolean;
   /** The agent the model is running in, while there is one. */
   agent: HiddenAgent | null;
@@ -95,6 +97,7 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
         if (canWrite()) await cache.save(bucket, job.workspaceId, { key, source: job.source, diff, document }, canWrite, cacheHit);
         if (job.cancelled) return;
         job.document = document;
+        job.builtHunks = snapshotHunks(diff.files);
         setStage(job, "done");
       };
 
@@ -172,6 +175,7 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
         source: request.scope === "commit" && request.commit
           ? { scope: request.scope, commit: request.commit.toLowerCase() }
           : { scope: request.scope },
+        builtHunks: null,
         cancelled: false,
         agent: null,
       };
@@ -185,7 +189,7 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
       return job.id;
     },
 
-    async status(_paseo: PaseoApi, workspaceId: string, jobId: string | null): Promise<JobStatus> {
+    async status(paseo: PaseoApi, workspaceId: string, jobId: string | null): Promise<JobStatus> {
       const wanted = jobId ?? latest.get(workspaceId) ?? null;
       const job = wanted ? jobs.get(wanted) : undefined;
       if (job && job.workspaceId !== workspaceId) return { job: null, document: null, staleness: null };
@@ -201,7 +205,12 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
         startedAt: job.startedAt,
       } : null;
       const source = saved?.source ?? job?.source;
-      return { job: view, document: job?.document ?? saved?.document ?? null, staleness: null, ...(source ? { source } : {}) };
+      const document = job?.document ?? saved?.document ?? null;
+      const builtHunks = saved ? snapshotHunks(saved.diff.files) : job?.builtHunks;
+      const staleness = source && document && builtHunks
+        ? await readStaleness(paseo, { ...source, workspaceId }, document, builtHunks)
+        : null;
+      return { job: view, document, staleness, ...(source ? { source } : {}) };
     },
 
     cancel(workspaceId: string, jobId: string): { cancelled: boolean; error: string | null } {

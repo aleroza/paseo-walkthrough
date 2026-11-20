@@ -85,11 +85,15 @@ export const documentSchema = z.object({
 });
 export type WalkthroughDocument = z.infer<typeof documentSchema>;
 
+const hunkLocationSchema = hunkSchema.pick({ id: true, path: true, header: true });
+
 export const stalenessSchema = z.object({
   stale: z.boolean(),
   staleStopIds: z.array(z.string()),
   uncoveredHunkIds: z.array(z.string()),
   missingHunkIds: z.array(z.string()),
+  uncoveredHunks: z.array(hunkLocationSchema).default([]),
+  missingHunks: z.array(hunkLocationSchema).default([]),
 });
 export type Staleness = z.infer<typeof stalenessSchema>;
 

@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import type { PanelState } from "./types";
 
 export const WALKTHROUGH_SCOPE = ["all", "staged", "unstaged", "branch", "commit"] as const;
 export type WalkthroughScope = (typeof WALKTHROUGH_SCOPE)[number];
@@ -68,6 +69,9 @@ export const MAX_ROUTINE_NOTES = 200;
 export const MAX_MODEL_ATTEMPTS = 3;
 
 export const DEFAULT_LANGUAGE = "en";
+
+/** The choice a workspace falls back to: every change, the daemon's default model, English. */
+export const DEFAULT_PANEL_STATE: PanelState = { scope: "all", model: null, language: DEFAULT_LANGUAGE };
 
 export const LANGUAGE_NAMES: Record<WalkthroughLanguage, string> = {
   en: "English",

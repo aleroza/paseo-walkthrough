@@ -131,3 +131,11 @@ export const workspaceSettingsSchema = z.object({
   language: z.enum(LANGUAGES).default("en"),
 });
 export type WorkspaceSettings = z.infer<typeof workspaceSettingsSchema>;
+
+/** The per-workspace choices the panel keeps in its own state: the scope, the model, the language. */
+export const panelStateSchema = z.object({
+  scope: z.enum(WALKTHROUGH_SCOPE),
+  model: z.string().nullable(),
+  language: z.enum(LANGUAGES),
+});
+export type PanelState = z.infer<typeof panelStateSchema>;

@@ -25,7 +25,7 @@ export const generateRpc = defineRpc({
   name: "walkthrough.generate",
   input: sourceRequestSchema.extend({
     model: z.string().nullable().default(null),
-    language: z.string().default("en"),
+    language: z.string().nullable().default(null),
   }),
   output: z.object({
     jobId: z.string(),

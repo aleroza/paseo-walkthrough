@@ -32,6 +32,16 @@ Repository for the Paseo `walkthrough` plugin: it turns a git diff into a readin
 - The client is React Native. The 0.15.4 UI kit has no diff viewer, so hunks render as text.
 - Do not add comments unless they explain a non-obvious constraint.
 
+## Defaults
+
+- A workspace with no remembered choice walks through every change (`scope: "all"`), is written by
+  the daemon's default model of the first provider that has one, and in English (`en`).
+- A model is named `provider/id`, the name the daemon takes. A model the daemon does not have is
+  refused, never swapped for another one.
+- The per-workspace choice (scope, model, language) lives in the panel state, because the plugin
+  settings API is host scope on daemon 0.15.4. The server keeps a copy of it under
+  `$PASEO_HOME/plugin-data/walkthrough/settings`, keyed by workspace id.
+
 ## External references
 
 - SDK surface notes for Paseo 0.15.4: `/tmp/opencode/walkthrough-notes/sdk-surface.md`

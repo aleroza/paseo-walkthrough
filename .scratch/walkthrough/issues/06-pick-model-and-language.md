@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 (Generate a walkthrough end to end).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] The panel offers a language picker with at least the languages the walkthrough is ported for.
 - [x] The panel offers a model picker populated from the models the daemon has available.

@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] The plugin is registered with Paseo under the id `walkthrough` and contributes a workspace panel.
 - [x] Git is invoked with a sanitised environment (the `GIT_*` variables removed) and with optional locks disabled.

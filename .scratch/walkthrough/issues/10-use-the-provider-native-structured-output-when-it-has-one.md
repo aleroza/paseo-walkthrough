@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 (Generate a walkthrough end to end).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] The plugin asks for the answer through the provider output schema on providers that support it: the Codex app-server, OpenCode v1, and OpenCode v2.
 - [x] On providers without structured output the plugin asks for JSON in the prompt and validates the answer against the schema.

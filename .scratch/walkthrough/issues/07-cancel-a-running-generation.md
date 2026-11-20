@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 (Generate a walkthrough end to end).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] A cancel control is available while a job is running and absent otherwise.
 - [x] Cancelling moves the job to the cancelled state and stops the model call.

@@ -4,7 +4,7 @@
 
 **Blocked by:** 04 (Full document shape).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] The cache key covers the repository root, the source, the model, the language, and the set of changed files and hunks.
 - [x] With the same key, the panel shows the cached document without a model call.

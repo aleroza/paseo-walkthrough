@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 (Generate a walkthrough end to end).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] The digest aliases hunks h1 through hn in a stable order and includes the file path and the hunk body for each.
 - [x] Generated files and lock files are excluded from the digest.

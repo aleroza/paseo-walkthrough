@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 (Scaffold the plugin and show the working-tree diff).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] The panel offers the five sources: all, staged, unstaged, branch, commit.
 - [x] Choosing a source re-collects the diff and the panel shows the files and hunks of that source.

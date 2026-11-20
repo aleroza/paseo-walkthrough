@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 (Scaffold the plugin and show the working-tree diff).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] Pressing Generate starts a background job and returns immediately; the panel polls the status and shows the current stage.
 - [x] The stages are collecting, asking, retrying, assembling, done, failed, and cancelled, and the panel renders the current one.

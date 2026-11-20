@@ -4,7 +4,7 @@
 
 **Blocked by:** 04 (Full document shape).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] The plugin re-collects the diff and compares it to the one the document was built from.
 - [x] A hunk whose content changed makes the stops that cover it outdated, and the panel shows those stops as stale.

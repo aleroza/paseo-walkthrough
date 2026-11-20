@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 (Generate a walkthrough end to end).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] The document has chapters, each with a title of at most 24 characters and a list of stops.
 - [x] Each stop carries the hunks it explains, its explanation, and its observations.

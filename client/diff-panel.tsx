@@ -50,14 +50,17 @@ const STAGE_LABELS: Record<WalkthroughJobState, string> = {
 
 const RUNNING_STAGES: WalkthroughJobState[] = ["collecting", "asking", "retrying", "assembling"];
 
-/** The Lucide icon each icon of the document is drawn with. */
+/**
+ * The Lucide icon each icon of the document is drawn with. The names are the export names of
+ * `lucide-react-native`, the set the host resolves them against: an unknown name renders nothing.
+ */
 const ICON_NAMES: Record<ChapterIcon, string> = {
-  bug: "bug",
-  wrench: "wrench",
-  path: "route",
-  flask: "flask-conical",
-  doc: "file-text",
-  gear: "settings",
+  bug: "Bug",
+  wrench: "Wrench",
+  path: "Route",
+  flask: "FlaskConical",
+  doc: "FileText",
+  gear: "Settings",
 };
 
 const statusColor = (colors: Colors, status: DiffFile["status"]) => {

@@ -106,7 +106,9 @@ async function untrackedSections(directory: string, scope: string): Promise<Sect
   const sections: Section[] = [];
   for (const path of paths) {
     const result = await git(directory, ["diff", ...PATCH_OPTIONS, "--no-index", "--", "/dev/null", path]);
-    sections.push({ scope, patch: gitOutput(result, "diff", 1) });
+    // With --no-index, Git returns 1 for a difference and for some errors.
+    const differenceCode = /^(?:error|fatal):/m.test(result.stderr) ? 0 : 1;
+    sections.push({ scope, patch: gitOutput(result, "diff", differenceCode) });
   }
   return sections;
 }

@@ -200,6 +200,14 @@ describe("walkthrough.diff", () => {
     expect(result.error).toMatch(/bad config/i);
   });
 
+  it("reports an invalid index when a staged diff fails", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, ".git", "index"), "invalid");
+    const result = await callDiff(repo, { scope: "staged" });
+    expect(result.diff).toBeNull();
+    expect(result.error).toMatch(/index file/i);
+  });
+
   it("uses the working files before the first commit", async () => {
     const repo = await mkdtemp(join(tmpdir(), "walkthrough-unborn-"));
     onTestFinished(() => rm(repo, { recursive: true, force: true }));

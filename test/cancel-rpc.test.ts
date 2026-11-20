@@ -241,6 +241,30 @@ describe("walkthrough.cancel", () => {
     await cleanup();
   });
 
+  it("reports a cancelled job's archive failure and retries on unload", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const b = 22;\n");
+    const { handlers, cleanup } = load();
+    const fake = fakePaseo(repo, { archiveFailures: 2, ignoresInterrupt: true });
+    const { jobId } = await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo }) as { jobId: string };
+    await waitUntil(() => fake.promptCount() > 0);
+    await callCancel(handlers, fake.paseo, jobId);
+
+    let status = await callStatus(handlers, fake.paseo, jobId);
+    for (let attempt = 0; attempt < 200 && !status.job?.error; attempt += 1) {
+      await sleep(5);
+      status = await callStatus(handlers, fake.paseo, jobId);
+    }
+    expect(status.job?.state).toBe("cancelled");
+    expect(status.job?.error).toContain("Could not archive walkthrough agent");
+    expect((await stat(fake.scratchDirectories[0])).isDirectory()).toBe(true);
+
+    await cleanup();
+
+    expect(fake.archived).toEqual(["agent-1"]);
+    await expect(stat(fake.scratchDirectories[0])).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("cancels a running generation, stops the model call and leaves no agent running", async () => {
     const repo = await createRepo();
     await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");

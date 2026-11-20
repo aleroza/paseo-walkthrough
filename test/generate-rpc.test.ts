@@ -77,13 +77,17 @@ function fakePaseo(directory: string, options: FakeOptions): FakePaseo {
       })
     : Promise.resolve();
 
-  const nextAnswer = () =>
-    queued !== null
-      ? Promise.resolve(queued)
-      : new Promise<string>((resolve) => {
-          waiting = resolve;
-          queued = null;
-        });
+  // A queued answer is handed out once: leaving it queued would replay it on the next ask.
+  const nextAnswer = () => {
+    if (queued !== null) {
+      const answer = queued;
+      queued = null;
+      return Promise.resolve(answer);
+    }
+    return new Promise<string>((resolve) => {
+      waiting = resolve;
+    });
+  };
 
   const workspace = { id: "ws-1", workspaceDirectory: directory };
   const handle = {

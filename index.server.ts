@@ -18,7 +18,7 @@ import {
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 export default function contribute(server: PluginServerContext) {
-  // The plugin writes nothing but its own data directory, and nothing at all until a walkthrough is cached.
+  // The plugin writes only under its own data directory.
   const dir = dataDirectory();
   const ready = ensurePrivateDirectory(dir).catch((error: unknown) => {
     console.error(`[walkthrough] the data directory ${dir} is not usable: ${String(error)}`);
@@ -70,7 +70,7 @@ export default function contribute(server: PluginServerContext) {
     return { jobId };
   });
 
-  server.handle(statusRpc, async ({ workspaceId, jobId }) => service.status(workspaceId, jobId));
+  server.handle(statusRpc, async ({ workspaceId, jobId }, { paseo }) => service.status(paseo, workspaceId, jobId));
 
   server.handle(cancelRpc, async ({ workspaceId, jobId }) => service.cancel(workspaceId, jobId));
 

@@ -13,6 +13,7 @@ interface Section {
 
 export interface SourceDiff {
   diff: Diff;
+  root: string | null;
   /** The base the branch source compared against, when it found one. */
   base: string | null;
 }
@@ -29,7 +30,7 @@ export async function collectDiff(directory: string, scope: WalkthroughScope, co
   if (!info?.isDirectory()) throw new Error(`The workspace directory ${directory} does not exist.`);
 
   const repository = await git(directory, ["rev-parse", "--show-toplevel"]);
-  if (repository.code !== 0) return { diff: emptyDiff(false), base: null };
+  if (repository.code !== 0) return { diff: emptyDiff(false), base: null, root: null };
 
   const collected = await collectSections(directory, scope, commit);
   const files = mergeFiles(collected.sections.flatMap((section) => parsePatch(section.patch, section.scope)));
@@ -44,6 +45,7 @@ export async function collectDiff(directory: string, scope: WalkthroughScope, co
       repository: true,
     },
     base: collected.base,
+    root: repository.stdout.replace(/\r?\n$/, ""),
   };
 }
 

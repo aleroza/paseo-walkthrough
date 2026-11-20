@@ -342,7 +342,14 @@ export function createDiffPanel(client: PluginClientContext) {
           setStages(result.job?.stages ?? []);
           setJobError(result.job?.error ?? null);
           setDocument(result.document);
-          if (result.job && result.job.id !== jobId) setJobId(result.job.id);
+          if (!jobId) {
+            const restoredCommit = result.document ? result.source?.commit : undefined;
+            if (restoredCommit) {
+              setCommit((current) => current || restoredCommit);
+              setDraft((current) => current || restoredCommit);
+            }
+            if (result.job && RUNNING_STAGES.includes(result.job.state)) setJobId(result.job.id);
+          }
         },
         () => undefined,
       );

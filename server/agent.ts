@@ -12,6 +12,8 @@ export interface HiddenAgentRequest {
 
 export interface HiddenAgent {
   ask(prompt: string, timeoutMs: number): Promise<string>;
+  /** Stops the running turn: the model stops working on the answer. */
+  stop(): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -43,6 +45,13 @@ export async function createHiddenAgent(paseo: PaseoApi, request: HiddenAgentReq
     handle = await paseo.agents.create(base);
   }
 
+  let disposed = false;
+  const dispose = async () => {
+    if (disposed) return;
+    disposed = true;
+    await handle.archive().catch(() => undefined);
+  };
+
   return {
     async ask(prompt: string, timeoutMs: number) {
       const result = await handle.run(prompt, { timeoutMs });
@@ -53,8 +62,22 @@ export async function createHiddenAgent(paseo: PaseoApi, request: HiddenAgentReq
       if (!answer) throw new Error("The model returned no answer.");
       return answer;
     },
-    async dispose() {
-      await handle.archive().catch(() => undefined);
+    /**
+     * Stops the model call that is running.
+     *
+     * The daemon gives a plugin no call that cancels a turn. The closest it comes is
+     * reloading the agent, which the daemon answers by interrupting the running turn
+     * before it reopens the session, and archiving the agent, which closes the provider
+     * session and kills the call for good.
+     */
+    async stop() {
+      try {
+        await handle.reload();
+      } catch {
+        // The daemon may refuse the interrupt; archiving the agent still stops the call.
+      }
+      await dispose();
     },
+    dispose,
   };
 }

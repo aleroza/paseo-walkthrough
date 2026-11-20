@@ -4,7 +4,7 @@ import { Icon, ScrollView, SettingsSelect, TextInput } from "@getpaseo/plugin/cl
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
-import { diffRpc, generateRpc, modelsRpc, saveSettingsRpc, settingsRpc, statusRpc } from "../shared/contracts";
+import { cancelRpc, diffRpc, generateRpc, modelsRpc, saveSettingsRpc, settingsRpc, statusRpc } from "../shared/contracts";
 import type { ChapterIcon, StopImportance, WalkthroughJobState, WalkthroughScope } from "../shared/constants";
 import { DEFAULT_PANEL_STATE, LANGUAGES, LANGUAGE_NAMES } from "../shared/constants";
 import type { Chapter, Diff, DiffFile, Hunk, ModelOption, PanelState, Stop, WalkthroughDocument } from "../shared/types";
@@ -269,6 +269,7 @@ export function createDiffPanel(client: PluginClientContext) {
     const [jobError, setJobError] = useState<string | null>(null);
     const [document, setDocument] = useState<WalkthroughDocument | null>(null);
     const [starting, setStarting] = useState(false);
+    const [cancelling, setCancelling] = useState(false);
 
     const choose = useCallback(
       (next: Partial<PanelState>) => {
@@ -396,6 +397,22 @@ export function createDiffPanel(client: PluginClientContext) {
         );
     }, [client, workspaceId, scope, commit, model, language]);
 
+    const cancel = useCallback(() => {
+      if (!jobId) return;
+      setCancelling(true);
+      client.rpc(cancelRpc, { workspaceId, jobId }).then(
+        (result) => {
+          setCancelling(false);
+          if (result.error) setJobError(result.error);
+          loadStatus();
+        },
+        (cause: unknown) => {
+          setCancelling(false);
+          setJobError(cause instanceof Error ? cause.message : String(cause));
+        },
+      );
+    }, [client, workspaceId, jobId, loadStatus]);
+
     const modelOptions = useMemo(
       () => [
         { label: "Default model", value: "" },
@@ -497,6 +514,20 @@ export function createDiffPanel(client: PluginClientContext) {
             {running ? "Generating..." : "Generate walkthrough"}
           </Text>
         </Pressable>
+        {running && jobId ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Cancel the walkthrough"
+            accessibilityState={{ disabled: cancelling }}
+            disabled={cancelling}
+            onPress={cancel}
+            style={[styles.cancel, { borderColor: colors.border, backgroundColor: colors.surface2 }]}
+          >
+            <Text style={[styles.generateText, { color: colors.foreground }]}>
+              {cancelling ? "Cancelling..." : "Cancel walkthrough"}
+            </Text>
+          </Pressable>
+        ) : null}
         {stage ? (
           <View style={styles.stages}>
             <Text style={[styles.stage, { color: colors.foreground }]}>{STAGE_LABELS[stage]}</Text>
@@ -538,6 +569,7 @@ const styles = StyleSheet.create({
   commit: { flexDirection: "row", alignItems: "center", gap: 8 },
   commitInput: { flex: 1, borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, fontSize: 12 },
   generate: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, alignItems: "center" },
+  cancel: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, alignItems: "center" },
   generateText: { fontSize: 13, fontWeight: "600" },
   stages: { gap: 2 },
   stage: { fontSize: 13, fontWeight: "600" },

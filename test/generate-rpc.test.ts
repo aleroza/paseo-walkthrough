@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import contribute from "../index.server";
-import { diffRpc, generateRpc, statusRpc } from "../shared/contracts";
+import { cancelRpc, diffRpc, generateRpc, statusRpc } from "../shared/contracts";
 import type { PaseoApi } from "../server/host-types";
 
 let homeRoot = "";
@@ -46,21 +46,36 @@ interface FakePaseo {
   paseo: PaseoApi;
   creations: AgentCreation[];
   prompts: string[];
+  /** The ids of the agents the plugin archived. */
+  archived: string[];
   release(answer: string): void;
+  releaseModelResolution(): void;
+  /** How many times the plugin asked the daemon which model to use. */
+  modelResolutions(): number;
   promptCount(): number;
 }
 
 interface FakeOptions {
   /** 0.16.2 and newer accept a background agent inside a workspace; 0.15.4 refuses it. */
   backgroundAgentInWorkspace: boolean;
+  /** The model resolution waits for the test, so a cancel can land while it is in flight. */
+  holdModelResolution?: boolean;
 }
 
 /** The daemon the plugin talks to: the model is stubbed at the agent boundary. */
 function fakePaseo(directory: string, options: FakeOptions): FakePaseo {
   const creations: AgentCreation[] = [];
   const prompts: string[] = [];
+  const archived: string[] = [];
   let queued: string | null = null;
   let waiting: ((answer: string) => void) | null = null;
+  let releaseModelResolution: (() => void) | null = null;
+  let modelResolutions = 0;
+  const modelResolution = options.holdModelResolution
+    ? new Promise<void>((resolve) => {
+        releaseModelResolution = resolve;
+      })
+    : Promise.resolve();
 
   const nextAnswer = () =>
     queued !== null
@@ -86,7 +101,11 @@ function fakePaseo(directory: string, options: FakeOptions): FakePaseo {
       list: async () => ({ entries: [workspace], pageInfo: {}, requestId: "r" }),
     },
     providers: {
-      listAvailable: async () => ({ providers: [{ provider: "test", available: true }], requestId: "r" }),
+      listAvailable: async () => {
+        modelResolutions += 1;
+        await modelResolution;
+        return { providers: [{ provider: "test", available: true }], requestId: "r" };
+      },
       listModels: async () => ({
         provider: "test",
         models: [{ provider: "test", id: "model-1", label: "Model 1", isDefault: true, isSelectable: true }],
@@ -99,14 +118,16 @@ function fakePaseo(directory: string, options: FakeOptions): FakePaseo {
         if (agentOptions.workspaceId && !options.backgroundAgentInWorkspace) {
           throw new Error("background is workspace creation intent; configure the selected workspace at creation.");
         }
+        const agentId = `agent-${creations.length}`;
         return {
-          id: `agent-${creations.length}`,
+          id: agentId,
           async run(text: string) {
             prompts.push(text);
             const answer = await nextAnswer();
             return { status: "idle", final: null, error: null, lastMessage: answer };
           },
           async archive() {
+            archived.push(agentId);
             return { archivedAt: "2026-01-01T00:00:00.000Z" };
           },
         };
@@ -118,6 +139,7 @@ function fakePaseo(directory: string, options: FakeOptions): FakePaseo {
     paseo,
     creations,
     prompts,
+    archived,
     release(answer: string) {
       if (waiting) {
         const resolve = waiting;
@@ -127,6 +149,11 @@ function fakePaseo(directory: string, options: FakeOptions): FakePaseo {
       }
       queued = answer;
     },
+    releaseModelResolution() {
+      releaseModelResolution?.();
+      releaseModelResolution = null;
+    },
+    modelResolutions: () => modelResolutions,
     promptCount: () => prompts.length,
   };
 }
@@ -282,6 +309,7 @@ describe("walkthrough.generate", () => {
     expect(retrying.job?.stages).toContain("retrying");
     expect(fake.promptCount()).toBe(2);
     expect(fake.prompts[1]).toContain("rejected");
+    expect(fake.prompts[1]).toContain("no JSON object");
 
     fake.release(modelAnswer(["h1"]));
     const finished = await waitForTerminal(handlers, fake.paseo, generated.jobId);
@@ -377,5 +405,65 @@ describe("walkthrough.generate", () => {
     expect(fake.creations[0]?.workspaceId).toBe("ws-1");
     expect(fake.creations[1]?.workspaceId).toBeUndefined();
     expect(fake.creations[1]?.background).toBe(true);
+  });
+
+  it("keeps a cancelled job cancelled, whatever the job was doing when the cancel landed", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    const { handlers } = load();
+    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true, holdModelResolution: true });
+
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    // The cancel lands while the job is still resolving the model, before the agent exists.
+    await waitUntil(() => fake.modelResolutions() > 0);
+    const cancelled = (await handlerFor(handlers, cancelRpc.name)({ workspaceId: "ws-1", jobId: generated.jobId }, { paseo: fake.paseo })) as {
+      cancelled: boolean;
+      error: string | null;
+    };
+    expect(cancelled).toEqual({ cancelled: true, error: null });
+
+    fake.releaseModelResolution();
+    const status = await waitFor(handlers, fake.paseo, generated.jobId, (view) => view.job?.state === "cancelled");
+    expect(status.job?.state).toBe("cancelled");
+
+    await sleep(50);
+    const later = await callStatus(handlers, fake.paseo, generated.jobId);
+    expect(later.job?.state).toBe("cancelled");
+    expect(fake.creations).toHaveLength(0);
+    expect(fake.archived).toEqual([]);
+  });
+
+  it("archives the hidden agent when the job ends, whether it succeeded or failed", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    const { handlers } = load();
+    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
+
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    await waitFor(handlers, fake.paseo, generated.jobId, (status) => status.job?.state === "asking");
+    fake.release(modelAnswer(["h1"]));
+    const finished = await waitForTerminal(handlers, fake.paseo, generated.jobId);
+    expect(finished.job?.state).toBe("done");
+
+    await waitUntil(() => fake.archived.length > 0);
+    expect(fake.archived).toEqual(["agent-1"]);
+  });
+
+  it("archives the hidden agent after a failed job, so no agent is left running", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    const { handlers } = load();
+    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
+
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await waitFor(handlers, fake.paseo, generated.jobId, (status) => fake.promptCount() > attempt);
+      fake.release("this is not json at all");
+    }
+    const finished = await waitForTerminal(handlers, fake.paseo, generated.jobId);
+    expect(finished.job?.state).toBe("failed");
+
+    await waitUntil(() => fake.archived.length > 0);
+    expect(fake.archived).toEqual(["agent-1"]);
   });
 });

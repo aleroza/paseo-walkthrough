@@ -42,12 +42,17 @@ const generationTimeoutMs = (hunkCount: number) =>
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+const TERMINAL_STATES: WalkthroughJobState[] = ["done", "failed", "cancelled"];
+const isTerminal = (state: WalkthroughJobState) => TERMINAL_STATES.includes(state);
+
 /** The generation of a walkthrough: a job the reviewer polls, never a call that blocks the panel. */
 export function createWalkthroughService(deps: { dataDirectory: string }) {
   const jobs = new Map<string, Job>();
   const latest = new Map<string, string>();
 
+  // A terminal state is final: a job that is done, failed or cancelled never moves again.
   const setStage = (job: Job, state: WalkthroughJobState) => {
+    if (isTerminal(job.state)) return;
     job.state = state;
     if (job.stages[job.stages.length - 1] !== state) job.stages.push(state);
   };
@@ -77,6 +82,7 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
       if (job.cancelled) return;
 
       const provider = await resolveModel(paseo, request.model ?? null);
+      if (job.cancelled) return;
       const { system, prompt } = buildPrompt({
         digest: digest.digest,
         fileCount: digest.fileCount,
@@ -124,7 +130,7 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
       job.error = message(error);
       setStage(job, "failed");
     } finally {
-      await agent?.dispose();
+      if (agent) await agent.dispose().catch(() => undefined);
     }
   };
 
@@ -143,7 +149,11 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
       };
       jobs.set(job.id, job);
       latest.set(request.workspaceId, job.id);
-      void run(paseo, job, request);
+      void run(paseo, job, request).catch((error: unknown) => {
+        if (isTerminal(job.state)) return;
+        job.error = message(error);
+        setStage(job, "failed");
+      });
       return job.id;
     },
 

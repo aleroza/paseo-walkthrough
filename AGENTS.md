@@ -35,12 +35,15 @@ Repository for the Paseo `walkthrough` plugin: it turns a git diff into a readin
 ## Defaults
 
 - A workspace with no remembered choice walks through every change (`scope: "all"`), is written by
-  the daemon's default model of the first provider that has one, and in English (`en`).
+  the daemon's default model (the first provider with models ready contributes the model it marks
+  as default, or its first model when it marks none), and in English (`en`).
 - A model is named `provider/id`, the name the daemon takes. A model the daemon does not have is
   refused, never swapped for another one.
 - The per-workspace choice (scope, model, language) lives in the panel state, because the plugin
-  settings API is host scope on daemon 0.15.4. The server keeps a copy of it under
-  `$PASEO_HOME/plugin-data/walkthrough/settings`, keyed by workspace id.
+  settings API is host scope on daemon 0.15.4. The host keeps the panel state per workspace key and
+  per tab, so closing the panel tab drops it. The server keeps a copy of it under
+  `$PASEO_HOME/plugin-data/walkthrough/settings`, keyed by workspace id, and that copy is what
+  restores the choice when the panel comes back without one.
 
 ## External references
 

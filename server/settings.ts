@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { WorkspaceSettings } from "../shared/types";
 import { workspaceSettingsSchema } from "../shared/types";
@@ -36,6 +36,8 @@ export async function writeWorkspaceSettings(
   const parsed = workspaceSettingsSchema.parse(settings);
   const directory = settingsDirectory(dataDirectory);
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  await writeFile(join(directory, fileName(workspaceId)), `${JSON.stringify(parsed, null, 2)}\n`, { mode: 0o600 });
+  const path = join(directory, fileName(workspaceId));
+  await writeFile(path, `${JSON.stringify(parsed, null, 2)}\n`, { mode: 0o600 });
+  await chmod(path, 0o600);
   return parsed;
 }

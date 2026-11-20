@@ -1,4 +1,4 @@
-import { git } from "./git";
+import { git, gitOutput } from "./git";
 
 export interface BranchBase {
   /** The ref the comparison starts from. */
@@ -16,7 +16,8 @@ const CONVENTIONAL_BASES = ["main", "master", "develop", "trunk"];
  */
 export async function detectBaseBranch(directory: string): Promise<BranchBase | null> {
   const head = await git(directory, ["rev-parse", "--verify", "--quiet", "HEAD"]);
-  if (head.code !== 0) return null;
+  if (head.code === 1) return null;
+  gitOutput(head, "rev-parse");
 
   const remote = await remoteDefaultBranch(directory);
   if (remote) return remote;
@@ -26,6 +27,7 @@ export async function detectBaseBranch(directory: string): Promise<BranchBase | 
     if (name === current) continue;
     const found = await git(directory, ["rev-parse", "--verify", "--quiet", `refs/heads/${name}`]);
     if (found.code === 0) return { ref: `refs/heads/${name}`, label: name };
+    gitOutput(found, "rev-parse", 1);
   }
 
   return null;
@@ -37,9 +39,7 @@ export async function detectBaseBranch(directory: string): Promise<BranchBase | 
  */
 async function remoteDefaultBranch(directory: string): Promise<BranchBase | null> {
   const refs = await git(directory, ["for-each-ref", "--format=%(refname) %(symref)", "refs/remotes"]);
-  if (refs.code !== 0) return null;
-
-  for (const line of refs.stdout.split("\n")) {
+  for (const line of gitOutput(refs, "for-each-ref").split(/\r?\n/)) {
     const [refname, symref] = line.split(" ");
     const match = /^refs\/remotes\/([^/]+)\/HEAD$/.exec(refname ?? "");
     if (!match) continue;
@@ -55,5 +55,5 @@ async function remoteDefaultBranch(directory: string): Promise<BranchBase | null
 
 async function currentBranch(directory: string): Promise<string> {
   const named = await git(directory, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
-  return named.code === 0 ? named.stdout.trim() : "";
+  return named.code === 1 ? "" : gitOutput(named, "symbolic-ref").trim();
 }

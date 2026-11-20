@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "v
 import contribute from "../index.server";
 import { diffRpc } from "../shared/contracts";
 import { PANEL_ID, PLUGIN_ID } from "../shared/constants";
-import { gitEnv } from "../server/git";
+
 import type { PaseoApi } from "../server/host-types";
 
 let homeRoot = "";
@@ -179,34 +179,70 @@ describe("walkthrough.diff", () => {
     expect(await listTree(repo)).toEqual(treeBefore);
   });
 
-  it("ignores the GIT_* variables of the daemon", async () => {
+  it.each(["GIT_DIR", "gIt_dIr"])("ignores the daemon's %s variable", async (key) => {
     const repo = await createRepo();
-    const other = await createRepo();
-    await writeFile(join(other, "app.ts"), "const a = 1;\nconst b = 222;\nconst c = 3;\n");
-    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
-    const previous = process.env.GIT_DIR;
-    process.env.GIT_DIR = join(other, ".git");
-    onTestFinished(() => {
-      if (previous === undefined) delete process.env.GIT_DIR;
-      else process.env.GIT_DIR = previous;
-    });
+    await writeFile(join(repo, "app.ts"), "changed content\n");
+    vi.stubEnv(key, join(repo, "missing.git"));
+    try {
+      const result = await callDiff(repo);
+      expect(result.error).toBeNull();
+      expect(result.diff?.files[0].hunks[0].patch).toContain("+changed content");
+    } finally {
+      vi.stubEnv(key, undefined);
+    }
+  });
+
+  it("reports a Git failure instead of returning an empty diff", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, ".git", "config"), "[invalid config\n");
+    const result = await callDiff(repo);
+    expect(result.diff).toBeNull();
+    expect(result.error).toMatch(/bad config/i);
+  });
+
+  it("uses the working files before the first commit", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "walkthrough-unborn-"));
+    onTestFinished(() => rm(repo, { recursive: true, force: true }));
+    await git(repo, ["init", "-q", "-b", "main", "."]);
+    await writeFile(join(repo, "app.ts"), "staged content\n");
+    await writeFile(join(repo, "removed.ts"), "staged only\n");
+    await git(repo, ["add", "-A"]);
+    await writeFile(join(repo, "app.ts"), "working content\n");
+    await writeFile(join(repo, "new.ts"), "untracked content\n");
+    await rm(join(repo, "removed.ts"));
 
     const result = await callDiff(repo);
 
     expect(result.error).toBeNull();
-    const app = result.diff?.files.find((file) => file.path === "app.ts");
-    expect(app?.hunks[0].patch).toContain("+const b = 22;");
-    expect(app?.hunks[0].patch).not.toContain("222");
+    expect(result.diff?.files.map(({ path }) => path)).toEqual(["app.ts", "new.ts"]);
+    expect(result.diff?.files[0].hunks[0].patch).toContain("+working content");
   });
 
-  it("runs git without the daemon's GIT_* variables and with the optional locks disabled", () => {
-    const env = gitEnv({ GIT_DIR: "/elsewhere", GIT_WORK_TREE: "/elsewhere", GIT_TERMINAL_PROMPT: "1", PATH: "/usr/bin" });
+  it("honors standard patch paths even when the repo customizes its prefixes", async () => {
+    const repo = await createRepo();
+    await git(repo, ["config", "diff.noprefix", "true"]);
+    await writeFile(join(repo, "app.ts"), "changed content\n");
+    const result = await callDiff(repo);
+    expect(result.error).toBeNull();
+    expect(result.diff?.files[0].path).toBe("app.ts");
+    expect(result.diff?.files[0].hunks[0].patch).toContain("+changed content");
+  });
 
-    expect(env.GIT_DIR).toBeUndefined();
-    expect(env.GIT_WORK_TREE).toBeUndefined();
-    expect(env.GIT_OPTIONAL_LOCKS).toBe("0");
-    expect(env.GIT_TERMINAL_PROMPT).toBe("0");
-    expect(env.PATH).toBe("/usr/bin");
+  it("compares a merge commit against its first parent", async () => {
+    const repo = await createRepo();
+    await git(repo, ["checkout", "-qb", "feature"]);
+    await writeFile(join(repo, "feature.ts"), "feature content\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["commit", "-qm", "feature"]);
+    await git(repo, ["checkout", "-q", "main"]);
+    await git(repo, ["merge", "-q", "--no-ff", "-m", "merge feature", "feature"]);
+    const commit = (await git(repo, ["rev-parse", "HEAD"])).trim();
+
+    const result = await callDiff(repo, { scope: "commit", commit });
+
+    expect(result.error).toBeNull();
+    expect(result.diff?.files.map(({ path }) => path)).toEqual(["feature.ts"]);
+    expect(result.diff?.files[0].hunks[0].patch).toContain("+feature content");
   });
 
   it("writes nothing outside its own data directory", async () => {

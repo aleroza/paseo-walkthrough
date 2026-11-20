@@ -2,7 +2,7 @@ import { stat } from "node:fs/promises";
 import type { WalkthroughScope } from "../shared/constants";
 import type { Diff, DiffFile } from "../shared/types";
 import { detectBaseBranch } from "./branch";
-import { git } from "./git";
+import { git, gitOutput } from "./git";
 import { isGeneratedArtifact } from "./generated";
 import { parsePatch } from "./patch";
 
@@ -23,14 +23,18 @@ const emptyDiff = (repository: boolean): Diff => ({ files: [], hunkCount: 0, fil
 // The commit reaches git as an argument, so it has to be a hash and nothing else: `git show --output=<file>`
 // would otherwise write a file wherever the argument points.
 const COMMIT_HASH = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+const PATCH_OPTIONS = ["--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"];
 
 /** Collects the working tree of a workspace with git. Nothing is written to the project. */
 export async function collectDiff(directory: string, scope: WalkthroughScope, commit?: string): Promise<SourceDiff> {
-  const info = await stat(directory).catch(() => null);
-  if (!info?.isDirectory()) throw new Error(`The workspace directory ${directory} does not exist.`);
+  const info = await stat(directory);
+  if (!info.isDirectory()) throw new Error(`The workspace path ${directory} is not a directory.`);
 
   const repository = await git(directory, ["rev-parse", "--show-toplevel"]);
-  if (repository.code !== 0) return { diff: emptyDiff(false), base: null, root: null };
+  if (repository.code === 128 && /^fatal: not a git repository\b/m.test(repository.stderr)) {
+    return { diff: emptyDiff(false), base: null, root: null };
+  }
+  const root = gitOutput(repository, "rev-parse").replace(/\r?\n$/, "");
 
   const collected = await collectSections(directory, scope, commit);
   const files = mergeFiles(collected.sections.flatMap((section) => parsePatch(section.patch, section.scope)));
@@ -45,7 +49,7 @@ export async function collectDiff(directory: string, scope: WalkthroughScope, co
       repository: true,
     },
     base: collected.base,
-    root: repository.stdout.replace(/\r?\n$/, ""),
+    root,
   };
 }
 
@@ -53,28 +57,32 @@ async function collectSections(directory: string, scope: WalkthroughScope, commi
   if (scope === "commit") {
     if (!commit) throw new Error("The commit source needs a commit hash.");
     if (!COMMIT_HASH.test(commit)) throw new Error("The commit source needs a full commit hash.");
-    const shown = await git(directory, ["show", "--format=", "--patch", "--relative", "--no-color", "--no-ext-diff", "--no-textconv", commit]);
-    if (shown.code !== 0) throw new Error(`Commit ${commit} is not in this repository.`);
-    return { sections: [{ scope: "commit", patch: shown.stdout }], base: null };
+    const shown = await git(directory, ["show", "--format=", "--patch", "--diff-merges=first-parent", "--relative", ...PATCH_OPTIONS, `${commit}^{commit}`, "--"]);
+    if (shown.code === 128 && /^fatal: bad (?:object|revision) /m.test(shown.stderr)) {
+      throw new Error(`Commit ${commit} is not in this repository.`);
+    }
+    return { sections: [{ scope, patch: gitOutput(shown, "show") }], base: null };
   }
 
   if (scope === "staged") {
-    const staged = await git(directory, ["diff", "--relative", "--cached", "--no-color", "--no-ext-diff", "--no-textconv"]);
-    return { sections: [{ scope: "staged", patch: staged.stdout }], base: null };
+    const staged = await git(directory, ["diff", "--relative", "--cached", ...PATCH_OPTIONS]);
+    return { sections: [{ scope, patch: gitOutput(staged, "diff") }], base: null };
   }
 
   if (scope === "unstaged") {
-    const unstaged = await git(directory, ["diff", "--relative", "--no-color", "--no-ext-diff", "--no-textconv"]);
-    return { sections: [{ scope: "unstaged", patch: unstaged.stdout }, ...(await untrackedSections(directory, "unstaged"))], base: null };
+    const unstaged = await git(directory, ["diff", "--relative", ...PATCH_OPTIONS]);
+    return { sections: [{ scope, patch: gitOutput(unstaged, "diff") }, ...(await untrackedSections(directory, scope))], base: null };
   }
 
   if (scope === "branch") return branchSections(directory);
 
   // Everything in the working tree against HEAD: the state the reviewer would see in the app.
   const head = await git(directory, ["rev-parse", "--verify", "--quiet", "HEAD"]);
-  const args = head.code === 0 ? ["diff", "--relative", "--no-color", "--no-ext-diff", "--no-textconv", "HEAD"] : ["diff", "--relative", "--cached", "--no-color", "--no-ext-diff", "--no-textconv"];
-  const all = await git(directory, args);
-  return { sections: [{ scope: "all", patch: all.stdout }, ...(await untrackedSections(directory, "all"))], base: null };
+  const from = head.code === 1
+    ? gitOutput(await git(directory, ["hash-object", "-t", "tree", "--stdin"]), "hash-object").trim()
+    : gitOutput(head, "rev-parse").trim();
+  const all = await git(directory, ["diff", "--relative", ...PATCH_OPTIONS, from, "--"]);
+  return { sections: [{ scope, patch: gitOutput(all, "diff") }, ...(await untrackedSections(directory, scope))], base: null };
 }
 
 /** The commits of the current branch that its base branch does not have. */
@@ -83,21 +91,22 @@ async function branchSections(directory: string): Promise<{ sections: Section[];
   if (!base) return { sections: [], base: null };
 
   const mergeBase = await git(directory, ["merge-base", base.ref, "HEAD"]);
-  if (mergeBase.code !== 0) return { sections: [], base: base.label };
+  if (mergeBase.code === 1) return { sections: [], base: base.label };
 
-  const patch = await git(directory, ["diff", "--relative", "--no-color", "--no-ext-diff", "--no-textconv", mergeBase.stdout.trim(), "HEAD"]);
-  return { sections: [{ scope: "branch", patch: patch.stdout }], base: base.label };
+  const from = gitOutput(mergeBase, "merge-base").trim();
+  const patch = await git(directory, ["diff", "--relative", ...PATCH_OPTIONS, from, "HEAD", "--"]);
+  return { sections: [{ scope: "branch", patch: gitOutput(patch, "diff") }], base: base.label };
 }
 
 /** Untracked files are part of the working tree: git has no patch for them until they are staged, so they are diffed against nothing. */
 async function untrackedSections(directory: string, scope: string): Promise<Section[]> {
   const listed = await git(directory, ["ls-files", "--others", "--exclude-standard", "-z"]);
-  if (listed.code !== 0) return [];
+  const paths = gitOutput(listed, "ls-files").split("\0").filter(Boolean);
 
   const sections: Section[] = [];
-  for (const path of listed.stdout.split("\0").filter(Boolean)) {
-    const result = await git(directory, ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "--no-index", "--", "/dev/null", path]);
-    if (result.code === 0 || result.code === 1) sections.push({ scope, patch: result.stdout });
+  for (const path of paths) {
+    const result = await git(directory, ["diff", ...PATCH_OPTIONS, "--no-index", "--", "/dev/null", path]);
+    sections.push({ scope, patch: gitOutput(result, "diff", 1) });
   }
   return sections;
 }

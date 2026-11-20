@@ -60,9 +60,10 @@ export class InvalidWalkthroughError extends Error {
   readonly problems: string[];
 
   constructor(problems: string[]) {
-    super(problems.join("; ") || "The model returned no usable walkthrough");
+    const shown = problems.slice(0, 8);
+    super(shown.join("; ") || "The model returned no usable walkthrough");
     this.name = "InvalidWalkthroughError";
-    this.problems = problems;
+    this.problems = shown;
   }
 }
 

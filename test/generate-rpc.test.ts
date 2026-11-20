@@ -360,7 +360,7 @@ describe("walkthrough.generate", () => {
     const repo = await createRepo();
     await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
     const { handlers } = load();
-    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
+    const fake = fakePaseo(repo, { provider: "claude", backgroundAgentInWorkspace: true });
 
     const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
     await waitFor(handlers, fake.paseo, generated.jobId, (status) => status.job?.state === "asking");

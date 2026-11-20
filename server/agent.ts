@@ -27,7 +27,7 @@ export interface HiddenAgent {
  * the daemon accepts is found by asking for the newer one and falling back when it is refused.
  */
 const BACKGROUND_IN_WORKSPACE_REFUSAL = "background is workspace creation intent";
-const OPEN_CODE_OUTPUT_REJECTION = /^(Invalid OpenCode structured output:|OpenCode finished without submitting the required structured output)/;
+const OPENCODE_OUTPUT_REJECTION = /^(Invalid OpenCode structured output:|OpenCode finished without submitting the required structured output)/;
 
 const refusesBackgroundInWorkspace = (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
@@ -62,7 +62,7 @@ export async function createHiddenAgent(paseo: PaseoApi, request: HiddenAgentReq
       if (result.status === "permission") throw new Error("The model asked for a permission the walkthrough cannot give.");
       if (result.status === "error") {
         const problem = result.error ?? "The model failed.";
-        if (request.initialTurn && OPEN_CODE_OUTPUT_REJECTION.test(problem)) throw new InvalidWalkthroughError([problem]);
+        if (request.initialTurn && OPENCODE_OUTPUT_REJECTION.test(problem)) throw new InvalidWalkthroughError([problem]);
         throw new Error(problem);
       }
       return result.lastMessage ?? "";

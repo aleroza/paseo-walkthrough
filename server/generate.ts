@@ -138,9 +138,9 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
           setStage(job, "retrying");
           // The pinned SDK attaches outputSchema only to the initial turn.
           if (nativeOutput) {
+            job.agent = null;
             await agent.dispose();
             agent = null;
-            job.agent = null;
           }
         }
       }

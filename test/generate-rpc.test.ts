@@ -36,11 +36,15 @@ async function createRepo(): Promise<string> {
 }
 
 interface AgentCreation {
-  provider: string;
+  config: { systemPrompt: string };
   cwd: string;
   background?: boolean;
   workspaceId?: string;
+  prompt?: string;
+  outputSchema?: Record<string, unknown>;
 }
+
+type ModelReply = string | { error: string };
 
 interface FakePaseo {
   paseo: PaseoApi;
@@ -48,7 +52,7 @@ interface FakePaseo {
   prompts: string[];
   /** The ids of the agents the plugin archived. */
   archived: string[];
-  release(answer: string): void;
+  release(answer: ModelReply): void;
   releaseModelResolution(): void;
   /** How many times the plugin asked the daemon which model to use. */
   modelResolutions(): number;
@@ -56,6 +60,7 @@ interface FakePaseo {
 }
 
 interface FakeOptions {
+  provider?: string;
   /** 0.16.2 and newer accept a background agent inside a workspace; 0.15.4 refuses it. */
   backgroundAgentInWorkspace: boolean;
   /** The model resolution waits for the test, so a cancel can land while it is in flight. */
@@ -64,11 +69,12 @@ interface FakeOptions {
 
 /** The daemon the plugin talks to: the model is stubbed at the agent boundary. */
 function fakePaseo(directory: string, options: FakeOptions): FakePaseo {
+  const provider = options.provider ?? "test";
   const creations: AgentCreation[] = [];
   const prompts: string[] = [];
   const archived: string[] = [];
-  let queued: string | null = null;
-  let waiting: ((answer: string) => void) | null = null;
+  let queued: ModelReply | null = null;
+  let waiting: ((answer: ModelReply) => void) | null = null;
   let releaseModelResolution: (() => void) | null = null;
   let modelResolutions = 0;
   const modelResolution = options.holdModelResolution
@@ -84,9 +90,15 @@ function fakePaseo(directory: string, options: FakeOptions): FakePaseo {
       queued = null;
       return Promise.resolve(answer);
     }
-    return new Promise<string>((resolve) => {
+    return new Promise<ModelReply>((resolve) => {
       waiting = resolve;
     });
+  };
+  const modelResult = async () => {
+    const reply = await nextAnswer();
+    return typeof reply === "string"
+      ? { status: "idle", final: null, error: null, lastMessage: reply }
+      : { status: "error", final: null, error: reply.error, lastMessage: null };
   };
 
   const workspace = { id: "ws-1", workspaceDirectory: directory };
@@ -108,11 +120,11 @@ function fakePaseo(directory: string, options: FakeOptions): FakePaseo {
       listAvailable: async () => {
         modelResolutions += 1;
         await modelResolution;
-        return { providers: [{ provider: "test", available: true }], requestId: "r" };
+        return { providers: [{ provider, available: true }], requestId: "r" };
       },
       listModels: async () => ({
-        provider: "test",
-        models: [{ provider: "test", id: "model-1", label: "Model 1", isDefault: true, isSelectable: true }],
+        provider,
+        models: [{ provider, id: "model-1", label: "Model 1", isDefault: true, isSelectable: true }],
         requestId: "r",
       }),
     },
@@ -122,14 +134,15 @@ function fakePaseo(directory: string, options: FakeOptions): FakePaseo {
         if (agentOptions.workspaceId && !options.backgroundAgentInWorkspace) {
           throw new Error("background is workspace creation intent; configure the selected workspace at creation.");
         }
+        if (agentOptions.prompt) prompts.push(agentOptions.prompt);
         const agentId = `agent-${creations.length}`;
         return {
           id: agentId,
           async run(text: string) {
             prompts.push(text);
-            const answer = await nextAnswer();
-            return { status: "idle", final: null, error: null, lastMessage: answer };
+            return modelResult();
           },
+          waitForFinish: modelResult,
           async archive() {
             archived.push(agentId);
             return { archivedAt: "2026-01-01T00:00:00.000Z" };
@@ -144,7 +157,7 @@ function fakePaseo(directory: string, options: FakeOptions): FakePaseo {
     creations,
     prompts,
     archived,
-    release(answer: string) {
+    release(answer: ModelReply) {
       if (waiting) {
         const resolve = waiting;
         waiting = null;
@@ -255,6 +268,50 @@ const modelAnswer = (aliases: string[]) =>
   });
 
 describe("walkthrough.generate", () => {
+  it("passes a JSON Schema on the initial native structured turn and normalizes its answer", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    const { handlers } = load();
+    const fake = fakePaseo(repo, { provider: "codex", backgroundAgentInWorkspace: false });
+
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    await waitUntil(() => fake.promptCount() > 0);
+    const creation = fake.creations.at(-1);
+    expect(creation?.prompt).toContain("Change digest:");
+    expect(creation?.outputSchema).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      required: ["title", "focus", "chapters", "routine"],
+      properties: { chapters: { type: "array", items: { type: "object", additionalProperties: false } } },
+    });
+
+    fake.release(modelAnswer(["h1"]));
+    const finished = await waitForTerminal(handlers, fake.paseo, generated.jobId);
+    expect(finished.job?.state).toBe("done");
+    expect(finished.document?.chapters[0]?.stops[0]?.hunkIds).toEqual([expect.stringMatching(/^all:app\.ts:[0-9a-f]{8}$/)]);
+  });
+
+  it("retries rejected OpenCode structured output with feedback and the same schema", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    const { handlers } = load();
+    const fake = fakePaseo(repo, { provider: "opencode", backgroundAgentInWorkspace: true });
+
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    await waitUntil(() => fake.promptCount() === 1);
+    fake.release({ error: "Invalid OpenCode structured output: data/chapters must be array" });
+
+    const secondTurn = await waitFor(handlers, fake.paseo, generated.jobId, (status) => fake.promptCount() === 2 || status.job?.state === "failed");
+    expect(secondTurn.job?.stages).toContain("retrying");
+    expect(fake.creations[1]?.prompt).toContain("data/chapters must be array");
+    expect(fake.creations[1]?.outputSchema).toEqual(fake.creations[0]?.outputSchema);
+
+    fake.release(modelAnswer(["h1"]));
+    const finished = await waitForTerminal(handlers, fake.paseo, generated.jobId);
+    expect(finished.job?.state).toBe("done");
+    expect(finished.document?.title).toBe("The change");
+  });
+
   it("starts a background job, shows its stages and answers with the document", async () => {
     const repo = await createRepo();
     await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
@@ -312,6 +369,8 @@ describe("walkthrough.generate", () => {
     const retrying = await waitFor(handlers, fake.paseo, generated.jobId, (status) => status.job?.stages.includes("retrying") === true);
     expect(retrying.job?.stages).toContain("retrying");
     expect(fake.promptCount()).toBe(2);
+    expect(fake.creations[0]?.outputSchema).toBeUndefined();
+    expect(fake.creations[0]?.config.systemPrompt).toContain("Return ONLY a JSON object");
     expect(fake.prompts[1]).toContain("rejected");
     expect(fake.prompts[1]).toContain("no JSON object");
 

@@ -46,6 +46,14 @@ export const modelDocumentSchema = z.object({
   routine: z.array(z.object({ path: z.string().default(""), note: z.string().default("") })).default([]),
 });
 
+// Codex requires every field and rejects JSON Schema defaults. Local validation still fills them in.
+export const modelOutputSchema = z.toJSONSchema(modelDocumentSchema, {
+  target: "draft-07",
+  override: ({ jsonSchema }) => {
+    delete jsonSchema.default;
+  },
+});
+
 export type ModelDocument = z.infer<typeof modelDocumentSchema>;
 
 const isChapterIcon = (value: string): value is Chapter["icon"] => CHAPTER_ICONS.some((icon) => icon === value);

@@ -5,7 +5,7 @@ import type { PaseoApi } from "./host-types";
 import { resolveWorkspaceDirectory } from "./workspace";
 
 type HunkLocation = Pick<Hunk, "id" | "path" | "header">;
-type HunkSnapshot = HunkLocation & { oldChangeStart: number; oldChangeEnd: number };
+type HunkSnapshot = { hunk: Hunk; oldChangeStart: number; oldChangeEnd: number };
 type StalenessSnapshot = Map<string, HunkSnapshot[]>;
 
 function snapshotHunk(hunk: Hunk): HunkSnapshot {
@@ -20,7 +20,7 @@ function snapshotHunk(hunk: Hunk): HunkSnapshot {
     }
     if (line.startsWith(" ") || line.startsWith("-")) oldLine += 1;
   }
-  return { id: hunk.id, path: hunk.path, header: hunk.header, oldChangeStart, oldChangeEnd };
+  return { hunk, oldChangeStart, oldChangeEnd };
 }
 
 export function snapshotHunks(files: DiffFile[]): StalenessSnapshot {
@@ -33,7 +33,7 @@ function overlaps(left: HunkSnapshot, right: HunkSnapshot): boolean {
   return start < end || (start === end && (left.oldChangeStart === left.oldChangeEnd || right.oldChangeStart === right.oldChangeEnd));
 }
 
-const locationOf = ({ id, path, header }: HunkSnapshot): HunkLocation => ({ id, path, header });
+const locationOf = ({ hunk: { id, path, header } }: HunkSnapshot): HunkLocation => ({ id, path, header });
 
 function compareStaleness(document: WalkthroughDocument, before: StalenessSnapshot, after: StalenessSnapshot): Staleness {
   const edited = new Set<string>();
@@ -43,15 +43,15 @@ function compareStaleness(document: WalkthroughDocument, before: StalenessSnapsh
   for (const path of new Set([...before.keys(), ...after.keys()])) {
     const oldHunks = before.get(path) ?? [];
     const newHunks = after.get(path) ?? [];
-    const oldIds = new Set(oldHunks.map((hunk) => hunk.id));
-    const newIds = new Set(newHunks.map((hunk) => hunk.id));
-    const gained = newHunks.filter((hunk) => !oldIds.has(hunk.id));
+    const oldIds = new Set(oldHunks.map(({ hunk }) => hunk.id));
+    const newIds = new Set(newHunks.map(({ hunk }) => hunk.id));
+    const gained = newHunks.filter(({ hunk }) => !oldIds.has(hunk.id));
     uncoveredHunks.push(...gained.map(locationOf));
 
     for (const hunk of oldHunks) {
-      if (newIds.has(hunk.id)) continue;
+      if (newIds.has(hunk.hunk.id)) continue;
       if (gained.some((replacement) => overlaps(hunk, replacement))) {
-        edited.add(hunk.id);
+        edited.add(hunk.hunk.id);
       } else {
         missingHunks.push(locationOf(hunk));
       }

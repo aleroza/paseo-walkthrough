@@ -209,7 +209,7 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
     async status(paseo: PaseoApi, workspaceId: string, jobId: string | null): Promise<JobStatus> {
       const wanted = jobId ?? latest.get(workspaceId) ?? null;
       const job = wanted ? jobs.get(wanted) : undefined;
-      if (job && job.workspaceId !== workspaceId) return { job: null, document: null, staleness: null };
+      if (job && job.workspaceId !== workspaceId) return { job: null, document: null, staleness: null, hunks: [] };
       const saved = jobId == null && (!job || (isTerminal(job.state) && !job.document))
         ? await cache.last(workspaceId)
         : null;
@@ -227,7 +227,8 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
       const staleness = source && document && builtHunks
         ? await readStaleness(paseo, { ...source, workspaceId }, document, builtHunks)
         : null;
-      return { job: view, document, staleness, ...(source ? { source } : {}) };
+      const hunks = builtHunks ? [...builtHunks.values()].flatMap((file) => file.map(({ hunk }) => hunk)) : [];
+      return { job: view, document, staleness, hunks, ...(source ? { source } : {}) };
     },
 
     cancel(workspaceId: string, jobId: string): { cancelled: boolean; error: string | null } {

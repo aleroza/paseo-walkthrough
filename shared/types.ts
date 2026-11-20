@@ -121,6 +121,7 @@ export const jobStatusSchema = z.object({
   job: jobSchema.nullable(),
   document: documentSchema.nullable(),
   staleness: stalenessSchema.nullable(),
+  hunks: z.array(hunkSchema).default([]),
   source: walkthroughSourceSchema.optional(),
 });
 export type JobStatus = z.infer<typeof jobStatusSchema>;

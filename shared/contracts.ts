@@ -2,11 +2,9 @@ import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import {
   diffSchema,
-  documentSchema,
   jobStatusSchema,
   modelOptionSchema,
   sourceRequestSchema,
-  stalenessSchema,
   workspaceSettingsSchema,
 } from "./types";
 
@@ -86,13 +84,3 @@ export const saveSettingsRpc = defineRpc({
   }),
 });
 
-export const documentRpc = defineRpc({
-  name: "walkthrough.document",
-  input: z.object({
-    workspaceId: z.string(),
-  }),
-  output: z.object({
-    document: documentSchema.nullable(),
-    staleness: stalenessSchema.nullable(),
-  }),
-});

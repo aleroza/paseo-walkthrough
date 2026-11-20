@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "v
 import contribute from "../index.server";
 import { diffRpc, generateRpc, statusRpc } from "../shared/contracts";
 import type { PaseoApi } from "../server/host-types";
-import type { Staleness } from "../shared/types";
+import type { Hunk, Staleness } from "../shared/types";
 
 let homeRoot = "";
 
@@ -233,6 +233,10 @@ describe("the walkthrough document", () => {
       uncoveredHunkIds: [changed, addedToExistingFile, added],
       missingHunkIds: [original[1]],
     });
+    expect(statusRpc.output.parse(edited).hunks).toEqual([
+      expect.objectContaining<Partial<Hunk>>({ id: original[0], path: "a.ts", patch: expect.stringContaining("+export const a_ts = 2;") }),
+      expect.objectContaining<Partial<Hunk>>({ id: original[1], path: "b.ts", patch: expect.stringContaining("+export const first = 2;") }),
+    ]);
   }, 30_000);
 
   it("reads as chapters of stops, with the observations, the skipped files and the hunks no stop covered", async () => {
@@ -253,10 +257,11 @@ describe("the walkthrough document", () => {
         focus: "The panel walks through the change.",
         chapters: [
           {
-            title: "A chapter title that does not fit the column",
+            title: "One useful chapter",
             icon: "bug",
             blurb: "The one thing that matters.",
             stops: [
+              oneStop(["h1", "h2"], " "),
               {
                 title: "The value moved",
                 hunks: ["h1"],
@@ -287,8 +292,7 @@ describe("the walkthrough document", () => {
 
     expect(document.chapters).toHaveLength(1);
     const chapter = document.chapters[0]!;
-    expect(chapter.title.length).toBeLessThanOrEqual(24);
-    expect(chapter.title).toBe("A chapter title that doe");
+    expect(chapter.title).toBe("One useful chapter");
     expect(chapter.icon).toBe("bug");
     expect(chapter.stops).toHaveLength(1);
 
@@ -369,12 +373,12 @@ describe("the walkthrough document", () => {
         answer({
           title: "Too much",
           focus: "",
-          chapters: Array.from({ length: 7 }, (_, index) => ({
-            title: `Chapter ${index + 1}`,
+          chapters: [{
+            title: "A chapter title that does not fit the column",
             icon: "doc",
             blurb: "",
             stops: [oneStop(["h1"], "Something changed here.")],
-          })),
+          }],
           routine: [],
         }),
       );
@@ -382,7 +386,7 @@ describe("the walkthrough document", () => {
 
     const finished = await waitForTerminal(handlers, fake.paseo, generated.jobId);
     expect(finished.job?.state).toBe("failed");
-    expect(finished.job?.error).toContain("chapters");
+    expect(finished.job?.error).toContain("24 characters");
     expect(finished.document).toBeNull();
   });
 });

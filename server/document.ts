@@ -60,10 +60,7 @@ const isChapterIcon = (value: string): value is Chapter["icon"] => CHAPTER_ICONS
 const isStopImportance = (value: string): value is Stop["importance"] => STOP_IMPORTANCE.some((importance) => importance === value);
 const isObservationKind = (value: string): value is Observation["kind"] => OBSERVATION_KINDS.some((kind) => kind === value);
 
-const asString = (value: string, max?: number) => {
-  const trimmed = value.trim();
-  return max && trimmed.length > max ? trimmed.slice(0, max) : trimmed;
-};
+const asString = (value: string) => value.trim();
 
 export class InvalidWalkthroughError extends Error {
   readonly problems: string[];
@@ -85,6 +82,11 @@ function limitsBrokenBy(raw: ModelDocument, idByAlias: Map<string, string>): str
 
   if (raw.chapters.length > MAX_CHAPTERS) {
     problems.push(`the walkthrough has ${raw.chapters.length} chapters, at most ${MAX_CHAPTERS} are allowed`);
+  }
+  for (const [index, chapter] of raw.chapters.entries()) {
+    if (Array.from(chapter.title.trim()).length > MAX_CHAPTER_TITLE_CHARS) {
+      problems.push(`the title of chapter ${index + 1} must be at most ${MAX_CHAPTER_TITLE_CHARS} characters`);
+    }
   }
 
   const stops = raw.chapters.flatMap((chapter) => chapter.stops);
@@ -129,7 +131,7 @@ export function normalizeWalkthrough(raw: ModelDocument, idByAlias: Map<string, 
   for (const [chapterIndex, rawChapter] of raw.chapters.entries()) {
     const stops: Stop[] = [];
     for (const rawStop of rawChapter.stops) {
-      const hunkIds: string[] = [];
+      const hunkIds = new Set<string>();
       for (const alias of rawStop.hunks) {
         const id = idByAlias.get(alias.trim());
         if (!id) {
@@ -137,13 +139,11 @@ export function normalizeWalkthrough(raw: ModelDocument, idByAlias: Map<string, 
           problems.push(`the hunk alias ${alias} is not part of this change`);
           continue;
         }
-        if (usedIds.has(id)) continue;
-        usedIds.add(id);
-        hunkIds.push(id);
+        if (!usedIds.has(id)) hunkIds.add(id);
       }
 
       const prose = asString(rawStop.prose);
-      if (hunkIds.length === 0) {
+      if (hunkIds.size === 0) {
         problems.push("a stop named no hunk of this change");
         continue;
       }
@@ -151,6 +151,7 @@ export function normalizeWalkthrough(raw: ModelDocument, idByAlias: Map<string, 
         problems.push("a stop explained no hunk");
         continue;
       }
+      for (const id of hunkIds) usedIds.add(id);
 
       const importance = isStopImportance(rawStop.importance) ? rawStop.importance : "normal";
       const observations: Observation[] = [];
@@ -164,7 +165,7 @@ export function normalizeWalkthrough(raw: ModelDocument, idByAlias: Map<string, 
       stops.push({
         id: `stop-${chapterIndex + 1}-${stops.length + 1}`,
         title: asString(rawStop.title) || `Step ${stopCount}`,
-        hunkIds,
+        hunkIds: [...hunkIds],
         importance,
         prose,
         observations,
@@ -175,7 +176,7 @@ export function normalizeWalkthrough(raw: ModelDocument, idByAlias: Map<string, 
 
     chapters.push({
       id: `chapter-${chapters.length + 1}`,
-      title: asString(rawChapter.title, MAX_CHAPTER_TITLE_CHARS) || `Part ${chapters.length + 1}`,
+      title: asString(rawChapter.title) || `Part ${chapters.length + 1}`,
       icon: isChapterIcon(rawChapter.icon) ? rawChapter.icon : "doc",
       blurb: asString(rawChapter.blurb),
       stops,

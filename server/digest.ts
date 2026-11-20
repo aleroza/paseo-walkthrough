@@ -32,7 +32,6 @@ export interface BuiltDigest {
   digest: Digest;
   /** Alias to hunk id: the model names a hunk by its alias, the document by its id. */
   idByAlias: Map<string, string>;
-  aliasById: Map<string, string>;
   hunkCount: number;
   fileCount: number;
   generatedPaths: string[];
@@ -45,7 +44,6 @@ const lineRange = (start: number, count: number) => `${start}-${start + Math.max
 /** Builds the digest of a collected diff: the hunks the model may anchor a stop to. */
 export function buildDigest(files: DiffFile[], scope: string): BuiltDigest {
   const idByAlias = new Map<string, string>();
-  const aliasById = new Map<string, string>();
   let counter = 0;
 
   const digestFiles: DigestFile[] = [];
@@ -64,7 +62,6 @@ export function buildDigest(files: DiffFile[], scope: string): BuiltDigest {
         counter += 1;
         const alias = `h${counter}`;
         idByAlias.set(alias, hunk.id);
-        aliasById.set(hunk.id, alias);
         return {
           alias,
           header: hunk.header,
@@ -85,7 +82,6 @@ export function buildDigest(files: DiffFile[], scope: string): BuiltDigest {
   return {
     digest: { files: digestFiles },
     idByAlias,
-    aliasById,
     hunkCount: counter,
     fileCount: digestFiles.length,
     generatedPaths,

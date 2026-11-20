@@ -83,13 +83,6 @@ const lineColor = (colors: Colors, line: string) => {
   return colors.foregroundMuted;
 };
 
-/** The path of the hunk an id names: the id is scope, path and the hash of the hunk. */
-const hunkPath = (id: string) => {
-  const first = id.indexOf(":");
-  const last = id.lastIndexOf(":");
-  return first > 0 && last > first ? id.slice(first + 1, last) : id;
-};
-
 function HunkView({ hunk, colors }: { hunk: Hunk; colors: Colors }) {
   const body = hunk.patch.split("\n").slice(1);
   if (body.length > 0 && body[body.length - 1] === "") body.pop();
@@ -101,6 +94,15 @@ function HunkView({ hunk, colors }: { hunk: Hunk; colors: Colors }) {
           {line.length > 0 ? line : " "}
         </Text>
       ))}
+    </View>
+  );
+}
+
+function DocumentHunkView({ hunk, colors }: { hunk: Hunk; colors: Colors }) {
+  return (
+    <View style={styles.documentHunk}>
+      <Text style={[styles.path, { color: colors.foreground }]}>{hunk.path}</Text>
+      <HunkView hunk={hunk} colors={colors} />
     </View>
   );
 }
@@ -130,7 +132,7 @@ function FileView({ file, generated, colors }: { file: DiffFile; generated: bool
   );
 }
 
-function StopView({ stop, stale, colors }: { stop: Stop; stale: boolean; colors: Colors }) {
+function StopView({ stop, stale, hunks, colors }: { stop: Stop; stale: boolean; hunks: Map<string, Hunk>; colors: Colors }) {
   return (
     <View style={[styles.stop, { borderColor: colors.border }]}>
       <View style={styles.stopHeader}>
@@ -139,9 +141,10 @@ function StopView({ stop, stale, colors }: { stop: Stop; stale: boolean; colors:
         {stale ? <Text style={[styles.meta, { color: colors.statusWarning }]}>Out of date</Text> : null}
       </View>
       <Text style={[styles.prose, { color: colors.foreground }]}>{stop.prose}</Text>
-      <Text style={[styles.meta, { color: colors.foregroundMuted }]}>
-        {stop.hunkIds.map((id) => hunkPath(id)).join(", ")}
-      </Text>
+      {stop.hunkIds.map((id) => {
+        const hunk = hunks.get(id);
+        return hunk ? <DocumentHunkView key={id} hunk={hunk} colors={colors} /> : null;
+      })}
       {stop.observations.map((observation, index) => (
         <View key={index} style={[styles.observation, { backgroundColor: colors.surface2 }]}>
           <View style={styles.observationHeader}>
@@ -158,7 +161,7 @@ function StopView({ stop, stale, colors }: { stop: Stop; stale: boolean; colors:
   );
 }
 
-function ChapterView({ chapter, staleStops, colors }: { chapter: Chapter; staleStops: Set<string>; colors: Colors }) {
+function ChapterView({ chapter, staleStops, hunks, colors }: { chapter: Chapter; staleStops: Set<string>; hunks: Map<string, Hunk>; colors: Colors }) {
   return (
     <View style={[styles.chapter, { borderColor: colors.border, backgroundColor: colors.surface1 }]}>
       <View style={styles.chapterHeader}>
@@ -167,7 +170,7 @@ function ChapterView({ chapter, staleStops, colors }: { chapter: Chapter; staleS
       </View>
       {chapter.blurb ? <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{chapter.blurb}</Text> : null}
       {chapter.stops.map((stop) => (
-        <StopView key={stop.id} stop={stop} stale={staleStops.has(stop.id)} colors={colors} />
+        <StopView key={stop.id} stop={stop} stale={staleStops.has(stop.id)} hunks={hunks} colors={colors} />
       ))}
     </View>
   );
@@ -222,13 +225,7 @@ function UncoveredView({ document, hunks, colors }: { document: WalkthroughDocum
       </Text>
       {document.uncoveredHunkIds.map((id) => {
         const hunk = hunks.get(id);
-        if (!hunk) return null;
-        return (
-          <View key={id} style={styles.uncoveredHunk}>
-            <Text style={[styles.path, { color: colors.foreground }]}>{hunk.path}</Text>
-            <HunkView hunk={hunk} colors={colors} />
-          </View>
-        );
+        return hunk ? <DocumentHunkView key={id} hunk={hunk} colors={colors} /> : null;
       })}
     </View>
   );
@@ -295,7 +292,7 @@ function DocumentView({
       {document.focus ? <Text style={[styles.prose, { color: colors.foreground }]}>{document.focus}</Text> : null}
       <ContentsView document={document} colors={colors} />
       {document.chapters.map((chapter) => (
-        <ChapterView key={chapter.id} chapter={chapter} staleStops={staleStopIds} colors={colors} />
+        <ChapterView key={chapter.id} chapter={chapter} staleStops={staleStopIds} hunks={hunks} colors={colors} />
       ))}
       <SkippedView document={document} colors={colors} />
       <UncoveredView document={document} hunks={hunks} colors={colors} />
@@ -329,6 +326,7 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
     const [jobError, setJobError] = useState<string | null>(null);
     const [document, setDocument] = useState<WalkthroughDocument | null>(null);
     const [staleness, setStaleness] = useState<Staleness | null>(null);
+    const [documentHunks, setDocumentHunks] = useState<Hunk[]>([]);
     const [starting, setStarting] = useState(false);
     const [cancelling, setCancelling] = useState(false);
 
@@ -386,36 +384,40 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
       };
     }, [client, workspaceId, setPanelState]);
 
-    const load = useCallback(() => {
-      if (scope === "commit" && !commit) {
-        setDiff(null);
-        setBase(null);
-        setError(null);
-        return;
-      }
-      client.rpc(diffRpc, { workspaceId, scope, ...(scope === "commit" ? { commit } : {}) }).then(
-        (result) => {
+    useEffect(() => {
+      let active = true;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      setDiff(null);
+      setBase(null);
+      setError(null);
+
+      async function loadDiff() {
+        try {
+          const result = await client.rpc(diffRpc, { workspaceId, scope, ...(scope === "commit" ? { commit } : {}) });
+          if (!active) return;
           setDiff(result.diff);
           setBase(result.base ?? null);
           setError(result.error);
-        },
-        (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)),
-      );
-    }, [client, workspaceId, scope, commit]);
+        } catch (cause) {
+          if (!active) return;
+          setDiff(null);
+          setBase(null);
+          setError(cause instanceof Error ? cause.message : String(cause));
+        } finally {
+          if (active) timer = setTimeout(loadDiff, POLL_MS);
+        }
+      }
 
-    useEffect(() => {
-      load();
-      const timer = setInterval(load, POLL_MS);
-      return () => clearInterval(timer);
-    }, [load]);
+      if (scope !== "commit" || commit) void loadDiff();
+      return () => {
+        active = false;
+        clearTimeout(timer);
+      };
+    }, [client, workspaceId, scope, commit]);
 
     const running = stage !== null && RUNNING_STAGES.includes(stage);
 
-    const hunks = useMemo(() => {
-      const byId = new Map<string, Hunk>();
-      for (const file of diff?.files ?? []) for (const hunk of file.hunks) byId.set(hunk.id, hunk);
-      return byId;
-    }, [diff]);
+    const hunks = useMemo(() => new Map(documentHunks.map((hunk) => [hunk.id, hunk])), [documentHunks]);
 
     useEffect(() => {
       let active = true;
@@ -429,6 +431,7 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
           setStages(result.job?.stages ?? []);
           setJobError(result.job?.error ?? null);
           setDocument(result.document);
+          setDocumentHunks(result.hunks);
           setStaleness(result.staleness);
           if (!jobId && restoredWorkspace.current !== workspaceId) {
             restoredWorkspace.current = workspaceId;
@@ -691,5 +694,5 @@ const styles = StyleSheet.create({
   observationKind: { fontSize: 11, fontWeight: "700" },
   section: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, padding: 10, gap: 6 },
   routineRow: { gap: 2 },
-  uncoveredHunk: { gap: 4 },
+  documentHunk: { gap: 4 },
 });

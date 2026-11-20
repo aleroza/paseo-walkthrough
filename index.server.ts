@@ -14,9 +14,10 @@ export default function contribute(server: PluginServerContext) {
   server.handle(diffRpc, async ({ workspaceId, scope, commit }, { paseo }) => {
     try {
       const directory = await resolveWorkspaceDirectory(paseo, workspaceId);
-      return { diff: await collectDiff(directory, scope, commit), error: null };
+      const collected = await collectDiff(directory, scope, commit);
+      return { diff: collected.diff, error: null, base: collected.base };
     } catch (error) {
-      return { diff: null, error: error instanceof Error ? error.message : String(error) };
+      return { diff: null, error: error instanceof Error ? error.message : String(error), base: null };
     }
   });
 

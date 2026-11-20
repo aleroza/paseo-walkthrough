@@ -8,6 +8,7 @@ import {
   MAX_OBSERVATIONS_PER_STOP,
   MAX_ROUTINE_NOTES,
   MAX_STOPS,
+  OBSERVATION_ICONS,
   OBSERVATION_KINDS,
   STOP_IMPORTANCE,
 } from "../shared/constants";
@@ -67,22 +68,59 @@ export class InvalidWalkthroughError extends Error {
   }
 }
 
+/**
+ * The limits the answer has to respect. An answer outside them is not a walkthrough to salvage:
+ * the model is asked again, with the reason it was refused.
+ */
+function limitsBrokenBy(raw: ModelDocument, idByAlias: Map<string, string>): string[] {
+  const problems: string[] = [];
+
+  if (raw.chapters.length > MAX_CHAPTERS) {
+    problems.push(`the walkthrough has ${raw.chapters.length} chapters, at most ${MAX_CHAPTERS} are allowed`);
+  }
+
+  const stops = raw.chapters.flatMap((chapter) => chapter.stops);
+  if (stops.length > MAX_STOPS) {
+    problems.push(`the walkthrough has ${stops.length} stops, at most ${MAX_STOPS} are allowed`);
+  }
+
+  let observations = 0;
+  for (const stop of stops) {
+    const hunks = new Set(stop.hunks.map((alias) => alias.trim()).filter((alias) => idByAlias.has(alias)));
+    if (hunks.size > MAX_HUNKS_PER_STOP) {
+      problems.push(`a stop names ${hunks.size} hunks, at most ${MAX_HUNKS_PER_STOP} are allowed`);
+    }
+    const valid = stop.observations.filter((observation) => observation.note.trim() !== "" && isObservationKind(observation.kind));
+    if (valid.length > MAX_OBSERVATIONS_PER_STOP) {
+      problems.push(`a stop has ${valid.length} observations, at most ${MAX_OBSERVATIONS_PER_STOP} are allowed`);
+    }
+    observations += valid.length;
+  }
+  if (observations > MAX_OBSERVATIONS) {
+    problems.push(`the walkthrough has ${observations} observations, at most ${MAX_OBSERVATIONS} are allowed`);
+  }
+
+  if (raw.routine.length > MAX_ROUTINE_NOTES) {
+    problems.push(`the walkthrough lists ${raw.routine.length} routine notes, at most ${MAX_ROUTINE_NOTES} are allowed`);
+  }
+
+  return problems;
+}
+
 /** Turns the answer of the model into the document, dropping what cannot be anchored or read. */
 export function normalizeWalkthrough(raw: ModelDocument, idByAlias: Map<string, string>, digestFiles: DigestFile[]): WalkthroughDocument {
+  const broken = limitsBrokenBy(raw, idByAlias);
+  if (broken.length > 0) throw new InvalidWalkthroughError(broken);
+
   const usedIds = new Set<string>();
   const problems: string[] = [];
   let droppedAnchors = 0;
   let stopCount = 0;
-  let observationCount = 0;
 
   const chapters: Chapter[] = [];
   for (const [chapterIndex, rawChapter] of raw.chapters.entries()) {
-    if (chapters.length >= MAX_CHAPTERS) break;
-
     const stops: Stop[] = [];
     for (const rawStop of rawChapter.stops) {
-      if (stopCount >= MAX_STOPS) break;
-
       const hunkIds: string[] = [];
       for (const alias of rawStop.hunks) {
         const id = idByAlias.get(alias.trim());
@@ -92,7 +130,6 @@ export function normalizeWalkthrough(raw: ModelDocument, idByAlias: Map<string, 
           continue;
         }
         if (usedIds.has(id)) continue;
-        if (hunkIds.length >= MAX_HUNKS_PER_STOP) break;
         usedIds.add(id);
         hunkIds.push(id);
       }
@@ -107,13 +144,12 @@ export function normalizeWalkthrough(raw: ModelDocument, idByAlias: Map<string, 
         continue;
       }
 
+      const importance = isStopImportance(rawStop.importance) ? rawStop.importance : "normal";
       const observations: Observation[] = [];
       for (const rawObservation of rawStop.observations) {
-        if (observations.length >= MAX_OBSERVATIONS_PER_STOP || observationCount >= MAX_OBSERVATIONS) break;
         const note = asString(rawObservation.note);
         if (!note || !isObservationKind(rawObservation.kind)) continue;
-        observationCount += 1;
-        observations.push({ kind: rawObservation.kind, note });
+        observations.push({ kind: rawObservation.kind, note, icon: OBSERVATION_ICONS[rawObservation.kind], importance });
       }
 
       stopCount += 1;
@@ -121,7 +157,7 @@ export function normalizeWalkthrough(raw: ModelDocument, idByAlias: Map<string, 
         id: `stop-${chapterIndex + 1}-${stops.length + 1}`,
         title: asString(rawStop.title) || `Step ${stopCount}`,
         hunkIds,
-        importance: isStopImportance(rawStop.importance) ? rawStop.importance : "normal",
+        importance,
         prose,
         observations,
       });
@@ -140,40 +176,50 @@ export function normalizeWalkthrough(raw: ModelDocument, idByAlias: Map<string, 
 
   if (chapters.length === 0) throw new InvalidWalkthroughError(problems);
 
+  const uncovered = uncoveredHunks(digestFiles, idByAlias, usedIds);
+
   return {
     title: asString(raw.title) || "Change walkthrough",
     focus: asString(raw.focus),
     chapters,
-    routine: normalizeRoutine(raw.routine, digestFiles, idByAlias, usedIds),
+    routine: normalizeRoutine(raw.routine, uncovered.byPath),
+    uncoveredHunkIds: uncovered.ids,
     droppedAnchors,
   };
 }
 
-/** The files the model left out: the ones that still have a hunk no stop covers. */
-function normalizeRoutine(
-  rawRoutine: { path: string; note: string }[],
+/** The hunks of this change that no stop covers: the reader still has to read them. */
+function uncoveredHunks(
   digestFiles: DigestFile[],
   idByAlias: Map<string, string>,
   usedIds: Set<string>,
-): RoutineNote[] {
-  const leftOut = new Set(
-    digestFiles
-      .filter((file) =>
-        file.hunks.some((hunk) => {
-          const id = idByAlias.get(hunk.alias);
-          return id === undefined || !usedIds.has(id);
-        }),
-      )
-      .map((file) => file.path),
-  );
+): { ids: string[]; byPath: Map<string, string[]> } {
+  const ids: string[] = [];
+  const byPath = new Map<string, string[]>();
 
+  for (const file of digestFiles) {
+    for (const hunk of file.hunks) {
+      const id = idByAlias.get(hunk.alias);
+      if (!id || usedIds.has(id)) continue;
+      ids.push(id);
+      const ofPath = byPath.get(file.path) ?? [];
+      ofPath.push(id);
+      byPath.set(file.path, ofPath);
+    }
+  }
+
+  return { ids, byPath };
+}
+
+/** The files the model left out: the ones that still have a hunk no stop covers. */
+function normalizeRoutine(rawRoutine: { path: string; note: string }[], uncoveredByPath: Map<string, string[]>): RoutineNote[] {
   const routine: RoutineNote[] = [];
   const seen = new Set<string>();
   for (const entry of rawRoutine) {
     if (routine.length >= MAX_ROUTINE_NOTES) break;
     const path = asString(entry.path);
     const note = asString(entry.note);
-    if (!note || !leftOut.has(path) || seen.has(path)) continue;
+    if (!note || !uncoveredByPath.has(path) || seen.has(path)) continue;
     seen.add(path);
     routine.push({ path, note });
   }

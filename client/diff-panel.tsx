@@ -1,10 +1,10 @@
 import type { PluginClientContext, PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
-import { ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
-import { useCallback, useEffect, useState } from "react";
+import { Icon, ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { diffRpc, generateRpc, statusRpc } from "../shared/contracts";
-import type { WalkthroughJobState, WalkthroughScope } from "../shared/constants";
+import type { ChapterIcon, StopImportance, WalkthroughJobState, WalkthroughScope } from "../shared/constants";
 import type { Chapter, Diff, DiffFile, Hunk, Stop, WalkthroughDocument } from "../shared/types";
 
 const POLL_MS = 4_000;
@@ -50,12 +50,25 @@ const STAGE_LABELS: Record<WalkthroughJobState, string> = {
 
 const RUNNING_STAGES: WalkthroughJobState[] = ["collecting", "asking", "retrying", "assembling"];
 
+/** The Lucide icon each icon of the document is drawn with. */
+const ICON_NAMES: Record<ChapterIcon, string> = {
+  bug: "bug",
+  wrench: "wrench",
+  path: "route",
+  flask: "flask-conical",
+  doc: "file-text",
+  gear: "settings",
+};
+
 const statusColor = (colors: Colors, status: DiffFile["status"]) => {
   if (status === "added") return colors.statusSuccess;
   if (status === "deleted") return colors.statusDanger;
   if (status === "renamed") return colors.statusWarning;
   return colors.foregroundMuted;
 };
+
+const importanceColor = (colors: Colors, importance: StopImportance) =>
+  importance === "critical" ? colors.statusWarning : colors.foregroundMuted;
 
 const lineColor = (colors: Colors, line: string) => {
   if (line.startsWith("+")) return colors.statusSuccess;
@@ -115,9 +128,7 @@ function StopView({ stop, colors }: { stop: Stop; colors: Colors }) {
     <View style={[styles.stop, { borderColor: colors.border }]}>
       <View style={styles.stopHeader}>
         <Text style={[styles.stopTitle, { color: colors.foreground }]}>{stop.title}</Text>
-        <Text style={[styles.meta, { color: stop.importance === "critical" ? colors.statusWarning : colors.foregroundMuted }]}>
-          {stop.importance}
-        </Text>
+        <Text style={[styles.meta, { color: importanceColor(colors, stop.importance) }]}>{stop.importance}</Text>
       </View>
       <Text style={[styles.prose, { color: colors.foreground }]}>{stop.prose}</Text>
       <Text style={[styles.meta, { color: colors.foregroundMuted }]}>
@@ -125,7 +136,13 @@ function StopView({ stop, colors }: { stop: Stop; colors: Colors }) {
       </Text>
       {stop.observations.map((observation, index) => (
         <View key={index} style={[styles.observation, { backgroundColor: colors.surface2 }]}>
-          <Text style={[styles.observationKind, { color: colors.accent }]}>{observation.kind}</Text>
+          <View style={styles.observationHeader}>
+            <Icon name={ICON_NAMES[observation.icon]} size={12} color={colors.accent} />
+            <Text style={[styles.observationKind, { color: colors.accent }]}>{observation.kind}</Text>
+            {observation.importance === "normal" ? null : (
+              <Text style={[styles.meta, { color: importanceColor(colors, observation.importance) }]}>{observation.importance}</Text>
+            )}
+          </View>
           <Text style={[styles.prose, { color: colors.foreground }]}>{observation.note}</Text>
         </View>
       ))}
@@ -136,7 +153,10 @@ function StopView({ stop, colors }: { stop: Stop; colors: Colors }) {
 function ChapterView({ chapter, colors }: { chapter: Chapter; colors: Colors }) {
   return (
     <View style={[styles.chapter, { borderColor: colors.border, backgroundColor: colors.surface1 }]}>
-      <Text style={[styles.chapterTitle, { color: colors.foreground }]}>{chapter.title}</Text>
+      <View style={styles.chapterHeader}>
+        <Icon name={ICON_NAMES[chapter.icon]} size={14} color={colors.foreground} />
+        <Text style={[styles.chapterTitle, { color: colors.foreground }]}>{chapter.title}</Text>
+      </View>
       {chapter.blurb ? <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{chapter.blurb}</Text> : null}
       {chapter.stops.map((stop) => (
         <StopView key={stop.id} stop={stop} colors={colors} />
@@ -145,25 +165,78 @@ function ChapterView({ chapter, colors }: { chapter: Chapter; colors: Colors }) 
   );
 }
 
-function DocumentView({ document, colors }: { document: WalkthroughDocument; colors: Colors }) {
+/** The contents of the document: the chapters and the stops they hold, in reading order. */
+function ContentsView({ document, colors }: { document: WalkthroughDocument; colors: Colors }) {
+  return (
+    <View style={[styles.contents, { borderColor: colors.border }]}>
+      <Text style={[styles.chapterTitle, { color: colors.foreground }]}>Contents</Text>
+      {document.chapters.map((chapter) => (
+        <View key={chapter.id} style={styles.contentsChapter}>
+          <View style={styles.chapterHeader}>
+            <Icon name={ICON_NAMES[chapter.icon]} size={12} color={colors.foregroundMuted} />
+            <Text style={[styles.contentsChapterTitle, { color: colors.foreground }]}>{chapter.title}</Text>
+          </View>
+          {chapter.stops.map((stop) => (
+            <Text key={stop.id} style={[styles.contentsStop, { color: colors.foregroundMuted }]}>
+              {stop.title}
+            </Text>
+          ))}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+/** The files the walkthrough left out, each with the reason the model gave. */
+function SkippedView({ document, colors }: { document: WalkthroughDocument; colors: Colors }) {
+  if (document.routine.length === 0) return null;
+  return (
+    <View style={[styles.section, { borderColor: colors.border }]}>
+      <Text style={[styles.chapterTitle, { color: colors.foreground }]}>Skipped files</Text>
+      {document.routine.map((note) => (
+        <View key={note.path} style={styles.routineRow}>
+          <Text style={[styles.path, { color: colors.foreground }]}>{note.path}</Text>
+          <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{note.note}</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+/** The hunks no stop covered: the reader still has to read them. */
+function UncoveredView({ document, hunks, colors }: { document: WalkthroughDocument; hunks: Map<string, Hunk>; colors: Colors }) {
+  if (document.uncoveredHunkIds.length === 0) return null;
+  return (
+    <View style={[styles.section, { borderColor: colors.border }]}>
+      <Text style={[styles.chapterTitle, { color: colors.foreground }]}>Not covered by a stop</Text>
+      <Text style={[styles.meta, { color: colors.foregroundMuted }]}>
+        {`${document.uncoveredHunkIds.length} ${document.uncoveredHunkIds.length === 1 ? "hunk" : "hunks"} no stop explains.`}
+      </Text>
+      {document.uncoveredHunkIds.map((id) => {
+        const hunk = hunks.get(id);
+        if (!hunk) return null;
+        return (
+          <View key={id} style={styles.uncoveredHunk}>
+            <Text style={[styles.path, { color: colors.foreground }]}>{hunk.path}</Text>
+            <HunkView hunk={hunk} colors={colors} />
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+function DocumentView({ document, hunks, colors }: { document: WalkthroughDocument; hunks: Map<string, Hunk>; colors: Colors }) {
   return (
     <View style={styles.document}>
       <Text style={[styles.documentTitle, { color: colors.foreground }]}>{document.title}</Text>
       {document.focus ? <Text style={[styles.prose, { color: colors.foreground }]}>{document.focus}</Text> : null}
+      <ContentsView document={document} colors={colors} />
       {document.chapters.map((chapter) => (
         <ChapterView key={chapter.id} chapter={chapter} colors={colors} />
       ))}
-      {document.routine.length > 0 ? (
-        <View style={[styles.routine, { borderColor: colors.border }]}>
-          <Text style={[styles.chapterTitle, { color: colors.foreground }]}>Left out of the walkthrough</Text>
-          {document.routine.map((note) => (
-            <View key={note.path} style={styles.routineRow}>
-              <Text style={[styles.path, { color: colors.foreground }]}>{note.path}</Text>
-              <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{note.note}</Text>
-            </View>
-          ))}
-        </View>
-      ) : null}
+      <SkippedView document={document} colors={colors} />
+      <UncoveredView document={document} hunks={hunks} colors={colors} />
     </View>
   );
 }
@@ -221,6 +294,12 @@ export function createDiffPanel(client: PluginClientContext) {
     }, [client, workspaceId, jobId]);
 
     const running = stage !== null && RUNNING_STAGES.includes(stage);
+
+    const hunks = useMemo(() => {
+      const byId = new Map<string, Hunk>();
+      for (const file of diff?.files ?? []) for (const hunk of file.hunks) byId.set(hunk.id, hunk);
+      return byId;
+    }, [diff]);
 
     useEffect(() => {
       loadStatus();
@@ -327,7 +406,7 @@ export function createDiffPanel(client: PluginClientContext) {
           </View>
         ) : null}
         {jobError ? <Text style={[styles.meta, { color: colors.statusDanger }]}>{jobError}</Text> : null}
-        {document ? <DocumentView document={document} colors={colors} /> : null}
+        {document ? <DocumentView document={document} hunks={hunks} colors={colors} /> : null}
         {error ? <Text style={[styles.meta, { color: colors.statusDanger }]}>{error}</Text> : null}
         {diff ? (
           <Text style={[styles.summary, { color: colors.foreground }]}>
@@ -367,14 +446,21 @@ const styles = StyleSheet.create({
   code: { fontSize: 12, fontFamily: "monospace" },
   document: { gap: 10 },
   documentTitle: { fontSize: 16, fontWeight: "700" },
+  contents: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, padding: 10, gap: 6 },
+  contentsChapter: { gap: 2 },
+  contentsChapterTitle: { fontSize: 13, fontWeight: "600", flexShrink: 1 },
+  contentsStop: { fontSize: 12, paddingLeft: 16 },
   chapter: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, padding: 10, gap: 8 },
+  chapterHeader: { flexDirection: "row", alignItems: "center", gap: 6 },
   chapterTitle: { fontSize: 14, fontWeight: "700" },
   stop: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: 8, gap: 4 },
   stopHeader: { flexDirection: "row", alignItems: "center", gap: 8 },
   stopTitle: { fontSize: 13, fontWeight: "600", flex: 1 },
   prose: { fontSize: 13 },
   observation: { borderRadius: 6, padding: 8, gap: 2 },
+  observationHeader: { flexDirection: "row", alignItems: "center", gap: 6 },
   observationKind: { fontSize: 11, fontWeight: "700" },
-  routine: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, padding: 10, gap: 6 },
+  section: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, padding: 10, gap: 6 },
   routineRow: { gap: 2 },
+  uncoveredHunk: { gap: 4 },
 });

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -8,6 +8,24 @@ import { generateRpc, modelsRpc, saveSettingsRpc, settingsRpc, statusRpc } from 
 import type { PaseoApi } from "../server/host-types";
 
 let homeRoot = "";
+
+it("rejects persistence when the plugin data directory resolves through a link", async () => {
+  const outside = join(homeRoot, "outside");
+  await mkdir(outside);
+  const data = join(homeRoot, "home", "plugin-data");
+  await mkdir(data, { recursive: true });
+  await symlink(outside, join(data, "walkthrough"), process.platform === "win32" ? "junction" : "dir");
+  const { handlers, cleanup } = load();
+  const context = { paseo: fakePaseo(outside).paseo };
+  try {
+    const input = saveSettingsRpc.input.parse({ workspaceId: "ws-1", settings: { language: "de" } });
+    await expect(handlerFor(handlers, saveSettingsRpc.name)(input, context)).rejects.toThrow("not a directory");
+    await expect(handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1" }, context)).rejects.toThrow("not a directory");
+    expect(await readdir(outside)).toEqual([]);
+  } finally {
+    await cleanup();
+  }
+});
 
 beforeEach(async () => {
   homeRoot = await mkdtemp(join(tmpdir(), "walkthrough-models-home-"));

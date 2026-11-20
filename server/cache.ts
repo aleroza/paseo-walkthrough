@@ -1,9 +1,10 @@
-import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { z } from "zod";
 import { diffSchema, documentSchema, walkthroughSourceSchema } from "../shared/types";
 import type { Diff, WalkthroughSource } from "../shared/types";
+import { writePrivateFile } from "./store";
 
 const entrySchema = z.object({
   key: z.string(),
@@ -42,17 +43,6 @@ async function readEntry(path: string): Promise<CacheEntry | null> {
   }
 }
 
-async function writeEntry(path: string, entry: CacheEntry, canWrite: () => boolean) {
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  try {
-    await writeFile(temporary, JSON.stringify(entry), { mode: 0o600, flag: "wx" });
-    if (canWrite()) await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
-  }
-}
-
 export function createWalkthroughCache(dataDirectory: string) {
   const directory = join(dataDirectory, "cache");
   const bucketPath = (bucket: string) => join(directory, "sources", `${bucket}.json`);
@@ -67,9 +57,10 @@ export function createWalkthroughCache(dataDirectory: string) {
       return readEntry(workspacePath(workspaceId));
     },
     async save(bucket: string, workspaceId: string, entry: CacheEntry, canWrite: () => boolean, cacheHit: boolean) {
-      const writes = [writeEntry(workspacePath(workspaceId), entry, canWrite)];
+      const contents = JSON.stringify(entry);
+      const writes = [writePrivateFile(workspacePath(workspaceId), contents, canWrite)];
       // The workspace's snapshot survives replacement of a shared source by another workspace.
-      if (!cacheHit) writes.push(writeEntry(bucketPath(bucket), entry, canWrite));
+      if (!cacheHit) writes.push(writePrivateFile(bucketPath(bucket), contents, canWrite));
       await Promise.allSettled(writes);
     },
   };

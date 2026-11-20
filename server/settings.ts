@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { WorkspaceSettings } from "../shared/types";
 import { workspaceSettingsSchema } from "../shared/types";
+import { writePrivateFile } from "./store";
 
 /** The choice a workspace falls back to: everything, the daemon's default model, English. */
 export const DEFAULT_SETTINGS: WorkspaceSettings = { scope: "all", model: null, language: "en" };
@@ -34,10 +35,7 @@ export async function writeWorkspaceSettings(
   settings: WorkspaceSettings,
 ): Promise<WorkspaceSettings> {
   const parsed = workspaceSettingsSchema.parse(settings);
-  const directory = settingsDirectory(dataDirectory);
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  const path = join(directory, fileName(workspaceId));
-  await writeFile(path, `${JSON.stringify(parsed, null, 2)}\n`, { mode: 0o600 });
-  await chmod(path, 0o600);
+  const path = join(settingsDirectory(dataDirectory), fileName(workspaceId));
+  await writePrivateFile(path, `${JSON.stringify(parsed, null, 2)}\n`);
   return parsed;
 }

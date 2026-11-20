@@ -83,4 +83,3 @@ export const saveSettingsRpc = defineRpc({
     settings: workspaceSettingsSchema,
   }),
 });
-

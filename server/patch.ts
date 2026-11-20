@@ -129,4 +129,3 @@ export function parsePatch(patch: string, scope: string): DiffFile[] {
 
   return files.filter((file) => file.path);
 }
-

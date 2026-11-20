@@ -1,4 +1,5 @@
-import { chmod, lstat, mkdir } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { chmod, lstat, mkdir, open, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 
@@ -21,4 +22,31 @@ export async function ensurePrivateDirectory(dir: string, uid = process.getuid?.
   if (!stat.isDirectory()) throw new Error(`${dir} is not a directory`);
   if (uid !== undefined && stat.uid !== uid) throw new Error(`${dir} is not owned by the current user`);
   if ((stat.mode & 0o077) !== 0) await chmod(dir, 0o700);
+}
+
+export async function prepareDataDirectory(dir: string): Promise<void> {
+  await ensurePrivateDirectory(dir);
+  const cache = join(dir, "cache");
+  await ensurePrivateDirectory(cache);
+  await Promise.all([
+    ensurePrivateDirectory(join(dir, "settings")),
+    ensurePrivateDirectory(join(dir, "scratch")),
+    ensurePrivateDirectory(join(cache, "sources")),
+    ensurePrivateDirectory(join(cache, "workspaces")),
+  ]);
+}
+
+export async function writePrivateFile(path: string, contents: string, canWrite = () => true): Promise<void> {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  const file = await open(temporary, "wx", 0o600);
+  try {
+    try {
+      await file.writeFile(contents);
+    } finally {
+      await file.close();
+    }
+    if (canWrite()) await rename(temporary, path);
+  } finally {
+    await rm(temporary, { force: true });
+  }
 }

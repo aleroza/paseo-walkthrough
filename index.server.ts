@@ -3,7 +3,7 @@ import { collectDiff } from "./server/diff";
 import { createWalkthroughService } from "./server/generate";
 import { listAvailableModels } from "./server/models";
 import { readWorkspaceSettings, writeWorkspaceSettings } from "./server/settings";
-import { dataDirectory, ensurePrivateDirectory } from "./server/store";
+import { dataDirectory, prepareDataDirectory } from "./server/store";
 import { resolveWorkspaceDirectory } from "./server/workspace";
 import {
   cancelRpc,
@@ -18,11 +18,16 @@ import {
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 export default function contribute(server: PluginServerContext) {
-  // The plugin writes only under its own data directory.
   const dir = dataDirectory();
-  const ready = ensurePrivateDirectory(dir).catch((error: unknown) => {
-    console.error(`[walkthrough] the data directory ${dir} is not usable: ${String(error)}`);
+  const ready = prepareDataDirectory(dir).then(() => null, (error: unknown) => {
+    const failure = new Error(`The walkthrough data directory is not usable: ${message(error)}`);
+    console.error(`[walkthrough] ${failure.message}`);
+    return failure;
   });
+  const requireStorage = async () => {
+    const error = await ready;
+    if (error) throw error;
+  };
 
   const service = createWalkthroughService({ dataDirectory: dir });
 
@@ -36,7 +41,6 @@ export default function contribute(server: PluginServerContext) {
     }
   });
 
-  // The models the reviewer may pick: only the ones the daemon has ready and allows.
   server.handle(modelsRpc, async (_input, { paseo }) => {
     try {
       const models = await listAvailableModels(paseo);
@@ -46,19 +50,18 @@ export default function contribute(server: PluginServerContext) {
     }
   });
 
-  // The choice a workspace made: the panel keeps it in its own state, this is the copy the server
-  // falls back to when a generation arrives without one.
-  server.handle(settingsRpc, async ({ workspaceId }) => ({
-    settings: await readWorkspaceSettings(dir, workspaceId),
-  }));
+  server.handle(settingsRpc, async ({ workspaceId }) => {
+    await requireStorage();
+    return { settings: await readWorkspaceSettings(dir, workspaceId) };
+  });
 
-  server.handle(saveSettingsRpc, async ({ workspaceId, settings }) => ({
-    settings: await writeWorkspaceSettings(dir, workspaceId, settings),
-  }));
+  server.handle(saveSettingsRpc, async ({ workspaceId, settings }) => {
+    await requireStorage();
+    return { settings: await writeWorkspaceSettings(dir, workspaceId, settings) };
+  });
 
-  // The model call takes minutes, so it never happens inside a handler: the handler starts the
-  // job and returns, and the panel polls the status.
   server.handle(generateRpc, async ({ workspaceId, scope, commit, model, language }, { paseo }) => {
+    await requireStorage();
     const remembered = await readWorkspaceSettings(dir, workspaceId);
     const jobId = service.start(paseo, {
       workspaceId,
@@ -70,7 +73,10 @@ export default function contribute(server: PluginServerContext) {
     return { jobId };
   });
 
-  server.handle(statusRpc, async ({ workspaceId, jobId }, { paseo }) => service.status(paseo, workspaceId, jobId));
+  server.handle(statusRpc, async ({ workspaceId, jobId }, { paseo }) => {
+    await requireStorage();
+    return service.status(paseo, workspaceId, jobId);
+  });
 
   server.handle(cancelRpc, async ({ workspaceId, jobId }) => service.cancel(workspaceId, jobId));
 

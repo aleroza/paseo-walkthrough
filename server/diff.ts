@@ -12,6 +12,10 @@ interface Section {
 
 const emptyDiff = (repository: boolean): Diff => ({ files: [], hunkCount: 0, fileCount: 0, generatedPaths: [], repository });
 
+// The commit reaches git as an argument, so it has to be a hash and nothing else: `git show --output=<file>`
+// would otherwise write a file wherever the argument points.
+const COMMIT_HASH = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+
 /** Collects the working tree of a workspace with git. Nothing is written to the project. */
 export async function collectDiff(directory: string, scope: WalkthroughScope, commit?: string): Promise<Diff> {
   const info = await stat(directory).catch(() => null);
@@ -36,18 +40,19 @@ export async function collectDiff(directory: string, scope: WalkthroughScope, co
 async function collectSections(directory: string, scope: WalkthroughScope, commit?: string): Promise<Section[]> {
   if (scope === "commit") {
     if (!commit) throw new Error("The commit source needs a commit hash.");
-    const shown = await git(directory, ["show", "--format=", "--patch", "--relative", "--no-color", "--no-ext-diff", commit]);
+    if (!COMMIT_HASH.test(commit)) throw new Error("The commit source needs a full commit hash.");
+    const shown = await git(directory, ["show", "--format=", "--patch", "--relative", "--no-color", "--no-ext-diff", "--no-textconv", commit]);
     if (shown.code !== 0) throw new Error(`Commit ${commit} is not in this repository.`);
     return [{ scope: "commit", patch: shown.stdout }];
   }
 
   if (scope === "staged") {
-    const staged = await git(directory, ["diff", "--relative", "--cached", "--no-color", "--no-ext-diff"]);
+    const staged = await git(directory, ["diff", "--relative", "--cached", "--no-color", "--no-ext-diff", "--no-textconv"]);
     return [{ scope: "staged", patch: staged.stdout }];
   }
 
   if (scope === "unstaged") {
-    const unstaged = await git(directory, ["diff", "--relative", "--no-color", "--no-ext-diff"]);
+    const unstaged = await git(directory, ["diff", "--relative", "--no-color", "--no-ext-diff", "--no-textconv"]);
     return [{ scope: "unstaged", patch: unstaged.stdout }, ...(await untrackedSections(directory, "unstaged"))];
   }
 
@@ -55,7 +60,7 @@ async function collectSections(directory: string, scope: WalkthroughScope, commi
 
   // Everything in the working tree against HEAD: the state the reviewer would see in the app.
   const head = await git(directory, ["rev-parse", "--verify", "--quiet", "HEAD"]);
-  const args = head.code === 0 ? ["diff", "--relative", "--no-color", "--no-ext-diff", "HEAD"] : ["diff", "--relative", "--cached", "--no-color", "--no-ext-diff"];
+  const args = head.code === 0 ? ["diff", "--relative", "--no-color", "--no-ext-diff", "--no-textconv", "HEAD"] : ["diff", "--relative", "--cached", "--no-color", "--no-ext-diff", "--no-textconv"];
   const all = await git(directory, args);
   return [{ scope: "all", patch: all.stdout }, ...(await untrackedSections(directory, "all"))];
 }
@@ -67,7 +72,7 @@ async function untrackedSections(directory: string, scope: string): Promise<Sect
 
   const sections: Section[] = [];
   for (const path of listed.stdout.split("\0").filter(Boolean)) {
-    const result = await git(directory, ["diff", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--no-index", "--", "/dev/null", path]);
+    const result = await git(directory, ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "--no-index", "--", "/dev/null", path]);
     if (result.code === 0 || result.code === 1) sections.push({ scope, patch: result.stdout });
   }
   return sections;

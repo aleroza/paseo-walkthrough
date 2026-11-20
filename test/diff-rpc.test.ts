@@ -230,4 +230,15 @@ describe("walkthrough.diff", () => {
     expect(result.diff).toBeNull();
     expect(result.error).toContain("not in this repository");
   });
+
+  it("refuses a commit that is not a hash, so it cannot become a git option", async () => {
+    const repo = await createRepo();
+    const target = join(repo, "written-by-git");
+
+    const result = await callDiff(repo, { scope: "commit", commit: `--output=${target}` });
+
+    expect(result.diff).toBeNull();
+    expect(result.error).toContain("full commit hash");
+    await expect(stat(target)).rejects.toThrow();
+  });
 });

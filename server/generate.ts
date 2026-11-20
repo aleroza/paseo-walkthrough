@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { WalkthroughJobState, WalkthroughScope } from "../shared/constants";
 import { DEFAULT_LANGUAGE, MAX_MODEL_ATTEMPTS } from "../shared/constants";
@@ -34,14 +34,13 @@ interface Job {
   document: WalkthroughDocument | null;
   source: WalkthroughSource;
   builtHunks: ReturnType<typeof snapshotHunks> | null;
-  cancelled: boolean;
-  /** The agent the model is running in, while there is one. */
-  agent: HiddenAgent | null;
+  cancellation: AbortController;
 }
 
 const GENERATION_TIMEOUT_BASE_MS = 120_000;
 const GENERATION_TIMEOUT_PER_HUNK_MS = 1_000;
 const GENERATION_TIMEOUT_MAX_MS = 900_000;
+const MAX_RETAINED_JOBS = 16;
 
 const generationTimeoutMs = (hunkCount: number) =>
   Math.min(GENERATION_TIMEOUT_MAX_MS, GENERATION_TIMEOUT_BASE_MS + Math.max(0, hunkCount) * GENERATION_TIMEOUT_PER_HUNK_MS);
@@ -63,46 +62,72 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
   const jobs = new Map<string, Job>();
   const latest = new Map<string, string>();
   const cache = createWalkthroughCache(deps.dataDirectory);
+  const running = new Set<Promise<void>>();
+  const pendingCleanup = new Set<() => Promise<void>>();
+  let closed = false;
 
-  // A terminal state is final: a job that is done, failed or cancelled never moves again.
   const setStage = (job: Job, state: WalkthroughJobState) => {
     if (isTerminal(job.state)) return;
     job.state = state;
     if (job.stages[job.stages.length - 1] !== state) job.stages.push(state);
   };
 
-  const scratchDirectory = async (jobId: string) => {
-    const directory = join(deps.dataDirectory, "scratch", jobId);
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-    return directory;
+  const pruneJobs = () => {
+    const completed = [...jobs.values()].filter(({ state }) => isTerminal(state));
+    for (const { id, workspaceId } of completed.slice(0, Math.max(0, completed.length - MAX_RETAINED_JOBS))) {
+      jobs.delete(id);
+      if (latest.get(workspaceId) === id) latest.delete(workspaceId);
+    }
   };
 
   const run = async (paseo: PaseoApi, job: Job, request: GenerationRequest) => {
+    const signal = job.cancellation.signal;
     let agent: HiddenAgent | null = null;
+    let scratch: string | null = null;
+    const archiveAgent = async (interrupt = false) => {
+      if (!agent) return;
+      try {
+        if (interrupt) await agent.stop();
+        else await agent.dispose();
+      } catch {
+        if (interrupt) await agent.dispose();
+        else await agent.stop();
+      }
+      agent = null;
+    };
+    const cleanUp = async () => {
+      await archiveAgent(true);
+      if (scratch) {
+        await rm(scratch, { recursive: true, force: true, maxRetries: 2 });
+        scratch = null;
+      }
+    };
+
     try {
       const directory = await resolveWorkspaceDirectory(paseo, request.workspaceId);
+      if (signal.aborted) return;
       const collected = await collectDiff(directory, request.scope, request.commit);
       const diff = collected.diff;
       if (!collected.root) throw new Error("This workspace is not a git repository, so there is nothing to walk through.");
-      if (job.cancelled) return;
+      if (signal.aborted) return;
 
       const digest = buildDigest(diff.files, request.scope);
       if (digest.hunkCount === 0) throw new Error(emptyChangeMessage(diff.files.length, digest.generatedPaths.length));
       const provider = await resolveModel(paseo, request.model ?? null);
-      if (job.cancelled) return;
+      if (signal.aborted) return;
       const language = normalizeLanguage(request.language ?? DEFAULT_LANGUAGE);
       const { bucket, key } = identifyChange(collected.root, relative(collected.root, directory), job.source, collected.base, provider, language, diff);
-      const canWrite = () => !job.cancelled && latest.get(job.workspaceId) === job.id;
+      const canWrite = () => !signal.aborted && latest.get(job.workspaceId) === job.id;
       const finish = async (document: WalkthroughDocument, cacheHit: boolean) => {
         if (canWrite()) await cache.save(bucket, job.workspaceId, { key, source: job.source, diff, document }, canWrite, cacheHit);
-        if (job.cancelled) return;
+        if (signal.aborted) return;
         job.document = document;
         job.builtHunks = snapshotHunks(diff.files);
         setStage(job, "done");
       };
 
       const cached = await cache.find(bucket, key);
-      if (job.cancelled) return;
+      if (signal.aborted) return;
       if (cached) {
         await finish(cached.document, true);
         return;
@@ -119,11 +144,13 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
         language,
       });
 
-      const cwd = await scratchDirectory(job.id);
+      const cwd = join(deps.dataDirectory, "scratch", job.id);
+      await mkdir(cwd, { mode: 0o700 });
+      scratch = cwd;
 
       let problems = "";
       for (let attempt = 1; attempt <= MAX_MODEL_ATTEMPTS; attempt += 1) {
-        if (job.cancelled) return;
+        if (signal.aborted) return;
         const turnPrompt = attempt === 1 ? prompt : retryPrompt(prompt, problems);
         setStage(job, "asking");
         if (!agent) {
@@ -133,18 +160,19 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
             systemPrompt: system,
             initialTurn: nativeOutput ? { prompt: turnPrompt, outputSchema: modelOutputSchema } : undefined,
           });
-          job.agent = agent;
-          if (job.cancelled) return;
+          if (signal.aborted) return;
         }
         try {
-          const answer = await agent.ask(turnPrompt, generationTimeoutMs(digest.hunkCount));
-          if (job.cancelled) return;
+          const answer = await agent.ask(turnPrompt, generationTimeoutMs(digest.hunkCount), signal);
+          if (signal.aborted) return;
           setStage(job, "assembling");
           const document = normalizeWalkthrough(readModelDocument(answer), digest.idByAlias, digest.digest.files);
+          await archiveAgent();
+          await cleanUp();
           await finish(document, false);
           return;
         } catch (error) {
-          if (job.cancelled) return;
+          if (signal.aborted) return;
           if (!(error instanceof InvalidWalkthroughError)) throw error;
           problems = message(error);
           if (attempt >= MAX_MODEL_ATTEMPTS) {
@@ -154,29 +182,34 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
           }
           setStage(job, "retrying");
           // The pinned SDK attaches outputSchema only to the initial turn.
-          if (nativeOutput) {
-            job.agent = null;
-            await agent.dispose();
-            agent = null;
-          }
+          if (nativeOutput) await archiveAgent();
         }
       }
     } catch (error) {
-      if (job.cancelled) {
-        setStage(job, "cancelled");
-        return;
-      }
+      if (signal.aborted) return;
       job.error = message(error);
       setStage(job, "failed");
     } finally {
-      job.agent = null;
-      if (agent) await agent.dispose().catch(() => undefined);
+      try {
+        await cleanUp();
+      } catch (error) {
+        pendingCleanup.add(cleanUp);
+        const problem = `Walkthrough cleanup failed: ${message(error)}`;
+        job.error = job.error ? `${job.error}\n${problem}` : problem;
+        console.error(`[walkthrough] ${problem}`);
+      }
     }
+  };
+
+  const cancelJob = (job: Job) => {
+    setStage(job, "cancelled");
+    job.cancellation.abort();
   };
 
   return {
     /** Starts the generation in the background and hands the reviewer a job to poll. */
     start(paseo: PaseoApi, request: GenerationRequest): string {
+      if (closed) throw new Error("The walkthrough plugin is unloading.");
       const latestId = latest.get(request.workspaceId);
       const active = latestId ? jobs.get(latestId) : undefined;
       if (active && !isTerminal(active.state)) return active.id;
@@ -193,15 +226,15 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
           ? { scope: request.scope, commit: request.commit.toLowerCase() }
           : { scope: request.scope },
         builtHunks: null,
-        cancelled: false,
-        agent: null,
+        cancellation: new AbortController(),
       };
       jobs.set(job.id, job);
       latest.set(request.workspaceId, job.id);
-      void run(paseo, job, request).catch((error: unknown) => {
-        if (isTerminal(job.state)) return;
-        job.error = message(error);
-        setStage(job, "failed");
+      const task = run(paseo, job, request);
+      running.add(task);
+      void task.finally(() => {
+        running.delete(task);
+        pruneJobs();
       });
       return job.id;
     },
@@ -235,17 +268,24 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
       const job = jobs.get(jobId);
       if (!job || job.workspaceId !== workspaceId) return { cancelled: false, error: "There is no walkthrough with that id." };
       if (job.state === "done" || job.state === "failed") return { cancelled: false, error: "That walkthrough has already finished." };
-      job.cancelled = true;
-      setStage(job, "cancelled");
-      // The model call stops in the background: the reviewer does not wait for the daemon
-      // to answer before the panel shows the job as cancelled.
-      const agent = job.agent;
-      if (agent) {
-        void agent.stop().catch((error: unknown) => {
-          console.error(`[walkthrough] the model call did not stop: ${message(error)}`);
-        });
-      }
+      cancelJob(job);
       return { cancelled: true, error: null };
+    },
+
+    async shutdown(): Promise<void> {
+      closed = true;
+      for (const job of jobs.values()) {
+        if (!isTerminal(job.state)) cancelJob(job);
+      }
+      await Promise.allSettled(running);
+      await Promise.all([...pendingCleanup].map(async (cleanUp) => {
+        try {
+          await cleanUp();
+          pendingCleanup.delete(cleanUp);
+        } catch (error) {
+          console.error(`[walkthrough] Cleanup during unload failed: ${message(error)}`);
+        }
+      }));
     },
   };
 }

@@ -27,13 +27,9 @@ export async function ensurePrivateDirectory(dir: string, uid = process.getuid?.
 export async function prepareDataDirectory(dir: string): Promise<void> {
   await ensurePrivateDirectory(dir);
   const cache = join(dir, "cache");
-  await ensurePrivateDirectory(cache);
-  await Promise.all([
-    ensurePrivateDirectory(join(dir, "settings")),
-    ensurePrivateDirectory(join(dir, "scratch")),
-    ensurePrivateDirectory(join(cache, "sources")),
-    ensurePrivateDirectory(join(cache, "workspaces")),
-  ]);
+  for (const directory of [join(dir, "settings"), join(dir, "scratch"), cache, join(cache, "sources"), join(cache, "workspaces")]) {
+    await ensurePrivateDirectory(directory);
+  }
 }
 
 export async function writePrivateFile(path: string, contents: string, canWrite = () => true): Promise<void> {

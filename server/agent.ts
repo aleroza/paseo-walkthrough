@@ -11,8 +11,7 @@ export interface HiddenAgentRequest {
 }
 
 export interface HiddenAgent {
-  ask(prompt: string, timeoutMs: number): Promise<string>;
-  /** Stops the running turn: the model stops working on the answer. */
+  ask(prompt: string, timeoutMs: number, signal: AbortSignal): Promise<string>;
   stop(): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -25,16 +24,25 @@ export async function createHiddenAgent(paseo: PaseoApi, request: HiddenAgentReq
   // Paseo replaces cwd with the workspace's directory when workspaceId is set.
   const handle = await paseo.agents.create({ config, cwd: request.cwd, background: true, ...request.initialTurn });
 
-  let disposed = false;
   const dispose = async () => {
-    if (disposed) return;
-    disposed = true;
-    await handle.archive().catch(() => undefined);
+    try {
+      await handle.archive();
+    } catch (error) {
+      const problem = error instanceof Error ? error.message : String(error);
+      throw new Error(`Could not archive walkthrough agent ${handle.id}: ${problem}`);
+    }
   };
 
   return {
-    async ask(prompt: string, timeoutMs: number) {
-      const result = request.initialTurn ? await handle.waitForFinish(timeoutMs) : await handle.run(prompt, { timeoutMs });
+    async ask(prompt: string, timeoutMs: number, signal: AbortSignal) {
+      signal.throwIfAborted();
+      const turn = request.initialTurn ? handle.waitForFinish(timeoutMs) : handle.run(prompt, { timeoutMs });
+      let abort = () => {};
+      const cancelled = new Promise<never>((_resolve, reject) => {
+        abort = () => reject(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+      });
+      const result = await Promise.race([turn, cancelled]).finally(() => signal.removeEventListener("abort", abort));
       if (result.status === "timeout") throw new Error("The model did not answer in time.");
       if (result.status === "permission") throw new Error("The model asked for a permission the walkthrough cannot give.");
       if (result.status === "error") {
@@ -44,19 +52,12 @@ export async function createHiddenAgent(paseo: PaseoApi, request: HiddenAgentReq
       }
       return result.lastMessage ?? "";
     },
-    /**
-     * Stops the model call that is running.
-     *
-     * The daemon gives a plugin no call that cancels a turn. The closest it comes is
-     * reloading the agent, which the daemon answers by interrupting the running turn
-     * before it reopens the session, and archiving the agent, which closes the provider
-     * session and kills the call for good.
-     */
     async stop() {
+      // The SDK exposes no turn cancellation. Reload interrupts the session before archive closes it.
       try {
         await handle.reload();
       } catch {
-        // The daemon may refuse the interrupt; archiving the agent still stops the call.
+        // Archive can still stop the turn if reload fails.
       }
       await dispose();
     },

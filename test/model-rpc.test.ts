@@ -242,13 +242,14 @@ const modelAnswer = (aliases: string[]) =>
 describe("walkthrough.models", () => {
   it("lists the models the daemon has available and the reviewer may pick", async () => {
     const repo = await createRepo();
-    const { handlers } = load();
+    const { handlers, cleanup } = load();
     const fake = fakePaseo(repo);
 
     const result = (await handlerFor(handlers, modelsRpc.name)({ workspaceId: "ws-1" }, { paseo: fake.paseo })) as {
       models: { provider: string; id: string; label: string }[];
       error: string | null;
     };
+    await cleanup();
 
     expect(result.error).toBeNull();
     expect(result.models).toEqual([
@@ -259,12 +260,13 @@ describe("walkthrough.models", () => {
 
   it("leaves out the models of a provider the daemon says is not ready", async () => {
     const repo = await createRepo();
-    const { handlers } = load();
+    const { handlers, cleanup } = load();
     const fake = fakePaseo(repo, { unavailable: "other" });
 
     const result = (await handlerFor(handlers, modelsRpc.name)({ workspaceId: "ws-1" }, { paseo: fake.paseo })) as {
       models: { provider: string }[];
     };
+    await cleanup();
 
     expect(result.models.every((model) => model.provider === "test")).toBe(true);
   });

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
@@ -38,6 +38,7 @@ async function createRepo(): Promise<string> {
 interface FakeOptions {
   /** The daemon ignores the interrupt and lets the model answer anyway. */
   ignoresInterrupt?: boolean;
+  archiveFailures?: number;
 }
 
 interface FakePaseo {
@@ -47,6 +48,7 @@ interface FakePaseo {
   interrupts: string[];
   /** The ids of the agents the plugin archived. */
   archived: string[];
+  scratchDirectories: string[];
   promptCount(): number;
   release(answer: string): void;
 }
@@ -59,6 +61,8 @@ function fakePaseo(directory: string, options: FakeOptions = {}): FakePaseo {
   const prompts: string[] = [];
   const interrupts: string[] = [];
   const archived: string[] = [];
+  const scratchDirectories: string[] = [];
+  let archiveFailures = options.archiveFailures ?? 0;
   let settle: ((result: { status: string; final: null; error: null; lastMessage: string | null }) => void) | null = null;
 
   const workspace = { id: "ws-1", workspaceDirectory: directory };
@@ -85,8 +89,9 @@ function fakePaseo(directory: string, options: FakeOptions = {}): FakePaseo {
       }),
     },
     agents: {
-      create: async () => {
+      create: async ({ cwd }: { cwd: string }) => {
         const agentId = "agent-1";
+        scratchDirectories.push(cwd);
         return {
           id: agentId,
           async run(text: string) {
@@ -105,6 +110,10 @@ function fakePaseo(directory: string, options: FakeOptions = {}): FakePaseo {
             return null;
           },
           async archive() {
+            if (archiveFailures > 0) {
+              archiveFailures -= 1;
+              throw new Error("archive unavailable");
+            }
             archived.push(agentId);
             return { archivedAt: "2026-01-01T00:00:00.000Z" };
           },
@@ -118,6 +127,7 @@ function fakePaseo(directory: string, options: FakeOptions = {}): FakePaseo {
     prompts,
     interrupts,
     archived,
+    scratchDirectories,
     promptCount: () => prompts.length,
     release(answer: string) {
       const resolve = settle;
@@ -195,6 +205,42 @@ const modelAnswer = JSON.stringify({
 });
 
 describe("walkthrough.cancel", () => {
+  it("stops active turns and removes their scratch on plugin unload", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const b = 22;\n");
+    const { handlers, cleanup } = load();
+    const fake = fakePaseo(repo, { ignoresInterrupt: true });
+    await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo });
+    await waitUntil(() => fake.promptCount() > 0);
+
+    await cleanup();
+
+    expect(fake.interrupts).toEqual(["agent-1"]);
+    expect(fake.archived).toEqual(["agent-1"]);
+    await expect(stat(fake.scratchDirectories[0])).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("recovers an archive failure before publishing a finished walkthrough", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const b = 22;\n");
+    const { handlers, cleanup } = load();
+    const fake = fakePaseo(repo, { archiveFailures: 1 });
+    const { jobId } = await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo }) as { jobId: string };
+    await waitUntil(() => fake.promptCount() > 0);
+    fake.release(modelAnswer);
+    await waitUntil(() => fake.archived.length > 0);
+    let status = await callStatus(handlers, fake.paseo, jobId);
+    for (let attempt = 0; attempt < 200 && status.job?.state === "assembling"; attempt += 1) {
+      await sleep(5);
+      status = await callStatus(handlers, fake.paseo, jobId);
+    }
+    expect(status.job?.state).toBe("done");
+    expect(fake.interrupts).toEqual(["agent-1"]);
+    expect(fake.archived).toEqual(["agent-1"]);
+    await expect(stat(fake.scratchDirectories[0])).rejects.toMatchObject({ code: "ENOENT" });
+    await cleanup();
+  });
+
   it("cancels a running generation, stops the model call and leaves no agent running", async () => {
     const repo = await createRepo();
     await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");

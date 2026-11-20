@@ -81,6 +81,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(cancelRpc, async ({ workspaceId, jobId }) => service.cancel(workspaceId, jobId));
 
   return async () => {
+    await service.shutdown();
     await ready;
   };
 }

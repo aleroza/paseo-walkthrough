@@ -311,6 +311,7 @@ export function createDiffPanel(client: PluginClientContext) {
     const [panelState, setPanelState] = useTabState(tab, panelStateSchema, DEFAULT_PANEL_STATE);
     const { scope, model, language } = panelState;
     const storedState = useRef(tab.state);
+    const restoredWorkspace = useRef<string | null>(null);
     const [commit, setCommit] = useState("");
     const [draft, setDraft] = useState("");
     const [diff, setDiff] = useState<Diff | null>(null);
@@ -414,7 +415,15 @@ export function createDiffPanel(client: PluginClientContext) {
           setJobError(result.job?.error ?? null);
           setDocument(result.document);
           setStaleness(result.staleness);
-          if (result.job && result.job.id !== jobId) {
+          if (!jobId && restoredWorkspace.current !== workspaceId) {
+            restoredWorkspace.current = workspaceId;
+            const restoredCommit = result.source?.commit;
+            if (restoredCommit) {
+              setCommit((current) => current || restoredCommit);
+              setDraft((current) => current || restoredCommit);
+            }
+          }
+          if (!jobId && result.job && RUNNING_STAGES.includes(result.job.state)) {
             setJobId(result.job.id);
             return;
           }

@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import type { WalkthroughJobState, WalkthroughScope } from "../shared/constants";
 import { DEFAULT_LANGUAGE, MAX_MODEL_ATTEMPTS } from "../shared/constants";
-import type { JobStatus, SourceRequest, WalkthroughDocument, WalkthroughJob } from "../shared/types";
+import type { JobStatus, WalkthroughDocument, WalkthroughJob, WalkthroughSource } from "../shared/types";
 import type { HiddenAgent } from "./agent";
 import { createHiddenAgent } from "./agent";
+import { createWalkthroughCache, identifyChange } from "./cache";
 import { collectDiff } from "./diff";
 import { buildDigest } from "./digest";
 import { InvalidWalkthroughError, modelOutputSchema, normalizeWalkthrough, readModelDocument } from "./document";
@@ -31,7 +32,7 @@ interface Job {
   error: string | null;
   startedAt: number;
   document: WalkthroughDocument | null;
-  source: SourceRequest;
+  source: WalkthroughSource;
   builtHunks: ReturnType<typeof snapshotHunks> | null;
   cancelled: boolean;
   /** The agent the model is running in, while there is one. */
@@ -61,6 +62,7 @@ const emptyChangeMessage = (fileCount: number, generatedFileCount: number) => {
 export function createWalkthroughService(deps: { dataDirectory: string }) {
   const jobs = new Map<string, Job>();
   const latest = new Map<string, string>();
+  const cache = createWalkthroughCache(deps.dataDirectory);
 
   // A terminal state is final: a job that is done, failed or cancelled never moves again.
   const setStage = (job: Job, state: WalkthroughJobState) => {
@@ -81,14 +83,31 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
       const directory = await resolveWorkspaceDirectory(paseo, request.workspaceId);
       const collected = await collectDiff(directory, request.scope, request.commit);
       const diff = collected.diff;
-      if (!diff.repository) throw new Error("This workspace is not a git repository, so there is nothing to walk through.");
+      if (!collected.root) throw new Error("This workspace is not a git repository, so there is nothing to walk through.");
+      if (job.cancelled) return;
 
       const digest = buildDigest(diff.files, request.scope);
       if (digest.hunkCount === 0) throw new Error(emptyChangeMessage(diff.files.length, digest.generatedPaths.length));
-      if (job.cancelled) return;
-
       const provider = await resolveModel(paseo, request.model ?? null);
       if (job.cancelled) return;
+      const language = normalizeLanguage(request.language ?? DEFAULT_LANGUAGE);
+      const { bucket, key } = identifyChange(collected.root, relative(collected.root, directory), job.source, collected.base, provider, language, diff);
+      const canWrite = () => !job.cancelled && latest.get(job.workspaceId) === job.id;
+      const finish = async (document: WalkthroughDocument, cacheHit: boolean) => {
+        if (canWrite()) await cache.save(bucket, job.workspaceId, { key, source: job.source, diff, document }, canWrite, cacheHit);
+        if (job.cancelled) return;
+        job.document = document;
+        job.builtHunks = snapshotHunks(diff.files);
+        setStage(job, "done");
+      };
+
+      const cached = await cache.find(bucket, key);
+      if (job.cancelled) return;
+      if (cached) {
+        await finish(cached.document, true);
+        return;
+      }
+
       // Daemon 0.15.4 advertises no structured output flag. Both OpenCode runtimes use the same provider id.
       const nativeOutput = /^(codex|opencode)\//.test(provider);
       const { system, prompt } = buildPrompt({
@@ -97,7 +116,7 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
         hunkCount: digest.hunkCount,
         scope: request.scope,
         commit: request.commit,
-        language: normalizeLanguage(request.language ?? DEFAULT_LANGUAGE),
+        language,
       });
 
       const cwd = await scratchDirectory(job.id);
@@ -122,9 +141,8 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
           const answer = await agent.ask(turnPrompt, generationTimeoutMs(digest.hunkCount));
           if (job.cancelled) return;
           setStage(job, "assembling");
-          job.document = normalizeWalkthrough(readModelDocument(answer), digest.idByAlias, digest.digest.files);
-          job.builtHunks = snapshotHunks(diff.files);
-          setStage(job, "done");
+          const document = normalizeWalkthrough(readModelDocument(answer), digest.idByAlias, digest.digest.files);
+          await finish(document, false);
           return;
         } catch (error) {
           if (job.cancelled) return;
@@ -168,7 +186,9 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
         error: null,
         startedAt: Date.now(),
         document: null,
-        source: { workspaceId: request.workspaceId, scope: request.scope, commit: request.commit },
+        source: request.scope === "commit" && request.commit
+          ? { scope: request.scope, commit: request.commit.toLowerCase() }
+          : { scope: request.scope },
         builtHunks: null,
         cancelled: false,
         agent: null,
@@ -186,19 +206,25 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
     async status(paseo: PaseoApi, workspaceId: string, jobId: string | null): Promise<JobStatus> {
       const wanted = jobId ?? latest.get(workspaceId) ?? null;
       const job = wanted ? jobs.get(wanted) : undefined;
-      if (!job || job.workspaceId !== workspaceId) return { job: null, document: null, staleness: null };
-
-      const view: WalkthroughJob = {
+      if (job && job.workspaceId !== workspaceId) return { job: null, document: null, staleness: null };
+      const saved = jobId == null && (!job || (isTerminal(job.state) && !job.document))
+        ? await cache.last(workspaceId)
+        : null;
+      const view: WalkthroughJob | null = job ? {
         id: job.id,
         workspaceId: job.workspaceId,
         state: job.state,
         stages: job.stages,
         error: job.error,
         startedAt: job.startedAt,
-      };
-      const document = job.document;
-      const staleness = document && job.builtHunks ? await readStaleness(paseo, job.source, document, job.builtHunks) : null;
-      return { job: view, document, staleness };
+      } : null;
+      const source = saved?.source ?? job?.source;
+      const document = job?.document ?? saved?.document ?? null;
+      const builtHunks = saved ? snapshotHunks(saved.diff.files) : job?.builtHunks;
+      const staleness = source && document && builtHunks
+        ? await readStaleness(paseo, { ...source, workspaceId }, document, builtHunks)
+        : null;
+      return { job: view, document, staleness, ...(source ? { source } : {}) };
     },
 
     cancel(workspaceId: string, jobId: string): { cancelled: boolean; error: string | null } {

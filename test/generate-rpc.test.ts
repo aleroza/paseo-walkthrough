@@ -208,6 +208,7 @@ const waitUntil = async (ready: () => boolean) => {
 
 interface JobStatusView {
   job: { id: string; state: string; stages: string[]; error: string | null } | null;
+  staleness: { stale: boolean } | null;
   document: {
     title: string;
     focus: string;
@@ -244,9 +245,9 @@ const waitFor = async (
 const waitForTerminal = (handlers: Map<string, Handler>, paseo: PaseoApi, jobId: string) =>
   waitFor(handlers, paseo, jobId, (status) => status.job?.state === "done" || status.job?.state === "failed" || status.job?.state === "cancelled");
 
-const modelAnswer = (aliases: string[]) =>
+const modelAnswer = (aliases: string[], title = "The change") =>
   JSON.stringify({
-    title: "The change",
+    title,
     focus: "The panel can now show a walkthrough of the working tree.",
     chapters: [
       {
@@ -266,6 +267,70 @@ const modelAnswer = (aliases: string[]) =>
     ],
     routine: [{ path: "app.ts", note: "The changed line." }],
   });
+
+describe("walkthrough cache", () => {
+  it("restores the workspace's document on reload and fulfills the same request without asking the model again", async () => {
+    const repo = await createRepo();
+    const path = join(repo, "app.ts");
+    const initialChange = "const a = 1;\nconst b = 22;\nconst c = 3;\n";
+    await writeFile(path, initialChange);
+    const first = load();
+    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
+    const request = { workspaceId: "ws-1", scope: "all" };
+    const generated = (await handlerFor(first.handlers, generateRpc.name)(request, { paseo: fake.paseo })) as { jobId: string };
+    fake.release(modelAnswer(["h1"]));
+    const finished = await waitForTerminal(first.handlers, fake.paseo, generated.jobId);
+    expect(finished.job?.state).toBe("done");
+    await first.cleanup();
+
+    const reopened = load();
+    const restore = handlerFor(reopened.handlers, statusRpc.name);
+    const restored = (await restore({ workspaceId: "ws-1", jobId: null }, { paseo: fake.paseo })) as JobStatusView;
+    expect(restored.document?.title).toBe("The change");
+    expect(restored.staleness?.stale).toBe(false);
+    const other = (await restore({ workspaceId: "ws-2", jobId: null }, { paseo: fake.paseo })) as JobStatusView;
+    expect(other.document).toBeNull();
+
+    await writeFile(path, "const a = 1;\nconst b = 23;\nconst c = 3;\n");
+    const stale = (await restore({ workspaceId: "ws-1", jobId: null }, { paseo: fake.paseo })) as JobStatusView;
+    expect(stale.document?.title).toBe("The change");
+    expect(stale.staleness?.stale).toBe(true);
+
+    await writeFile(path, initialChange);
+    const reused = (await handlerFor(reopened.handlers, generateRpc.name)(request, { paseo: fake.paseo })) as { jobId: string };
+    const hit = await waitForTerminal(reopened.handlers, fake.paseo, reused.jobId);
+    expect(hit.job?.state).toBe("done");
+    expect(hit.document).toEqual(finished.document);
+    expect(fake.promptCount()).toBe(1);
+    await reopened.cleanup();
+  });
+
+  it("asks the model after the diff changes and replaces the older cache entry", async () => {
+    const repo = await createRepo();
+    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
+    const { handlers, cleanup } = load();
+    const generate = handlerFor(handlers, generateRpc.name);
+    const request = { workspaceId: "ws-1", scope: "all" };
+    const generateForValue = async (value: number, title: string) => {
+      await writeFile(join(repo, "app.ts"), `const a = 1;\nconst b = ${value};\nconst c = 3;\n`);
+      const { jobId } = await generate(request, { paseo: fake.paseo }) as { jobId: string };
+      fake.release(modelAnswer(["h1"], title));
+      return waitForTerminal(handlers, fake.paseo, jobId);
+    };
+
+    expect((await generateForValue(22, "First version")).document?.title).toBe("First version");
+    expect((await generateForValue(23, "Second version")).document?.title).toBe("Second version");
+    expect(fake.promptCount()).toBe(2);
+
+    const reopened = load();
+    const restored = await handlerFor(reopened.handlers, statusRpc.name)({ workspaceId: "ws-1", jobId: null }, { paseo: fake.paseo }) as JobStatusView;
+    expect(restored.document?.title).toBe("Second version");
+    expect((await generateForValue(22, "Recreated version")).document?.title).toBe("Recreated version");
+    expect(fake.promptCount()).toBe(3);
+    await cleanup();
+    await reopened.cleanup();
+  });
+});
 
 describe("walkthrough.generate", () => {
   it("passes a JSON Schema on the initial native structured turn and normalizes its answer", async () => {

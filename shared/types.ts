@@ -97,11 +97,13 @@ export const stalenessSchema = z.object({
 });
 export type Staleness = z.infer<typeof stalenessSchema>;
 
-export const sourceRequestSchema = z.object({
-  workspaceId: z.string(),
+export const walkthroughSourceSchema = z.object({
   scope: z.enum(WALKTHROUGH_SCOPE).default("all"),
   commit: z.string().optional(),
 });
+export type WalkthroughSource = z.infer<typeof walkthroughSourceSchema>;
+
+export const sourceRequestSchema = walkthroughSourceSchema.extend({ workspaceId: z.string() });
 export type SourceRequest = z.infer<typeof sourceRequestSchema>;
 
 export const jobSchema = z.object({
@@ -119,6 +121,7 @@ export const jobStatusSchema = z.object({
   job: jobSchema.nullable(),
   document: documentSchema.nullable(),
   staleness: stalenessSchema.nullable(),
+  source: walkthroughSourceSchema.optional(),
 });
 export type JobStatus = z.infer<typeof jobStatusSchema>;
 

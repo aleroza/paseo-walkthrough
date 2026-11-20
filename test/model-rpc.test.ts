@@ -1,19 +1,20 @@
+import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import contribute from "../index.server";
 import { generateRpc, modelsRpc, saveSettingsRpc, settingsRpc, statusRpc } from "../shared/contracts";
 import type { PaseoApi } from "../server/host-types";
 
 let homeRoot = "";
 
-beforeAll(async () => {
+beforeEach(async () => {
   homeRoot = await mkdtemp(join(tmpdir(), "walkthrough-models-home-"));
   vi.stubEnv("PASEO_HOME", join(homeRoot, "home"));
 });
 
-afterAll(async () => {
+afterEach(async () => {
   vi.unstubAllEnvs();
   await rm(homeRoot, { recursive: true, force: true });
 });
@@ -252,6 +253,66 @@ describe("walkthrough.models", () => {
 });
 
 describe("walkthrough.generate with a chosen model and language", () => {
+  it("starts from the Command Center with the workspace's remembered source, model, and language", async () => {
+    const repo = await createRepo();
+    const { handlers } = load();
+    const fake = fakePaseo(repo);
+    const context = { paseo: fake.paseo };
+    await handlerFor(handlers, saveSettingsRpc.name)(
+      { workspaceId: "ws-1", settings: { scope: "unstaged", model: "test/model-2", language: "de" } },
+      context,
+    );
+
+    const request = generateRpc.input.parse({ workspaceId: "ws-1" });
+    const { jobId } = generateRpc.output.parse(await handlerFor(handlers, generateRpc.name)(request, context));
+    fake.release(modelAnswer(["h1"]));
+    await waitForTerminal(handlers, fake.paseo, jobId);
+    const status = statusRpc.output.parse(await handlerFor(handlers, statusRpc.name)({ workspaceId: "ws-1", jobId }, context));
+
+    expect(status.document?.chapters[0]?.stops[0]?.hunkIds[0]).toMatch(/^unstaged:app\.ts:/);
+    expect(fake.providers).toEqual(["test/model-2"]);
+    expect(fake.systemPrompts[0]).toContain("Write all prose in German");
+  });
+
+  it("collects the remembered commit when starting from the Command Center", async () => {
+    const repo = await createRepo();
+    const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+    const { handlers } = load();
+    const fake = fakePaseo(repo);
+    const context = { paseo: fake.paseo };
+    await handlerFor(handlers, saveSettingsRpc.name)(
+      saveSettingsRpc.input.parse({ workspaceId: "ws-1", settings: { scope: "commit", commit } }),
+      context,
+    );
+
+    const request = generateRpc.input.parse({ workspaceId: "ws-1" });
+    const { jobId } = generateRpc.output.parse(await handlerFor(handlers, generateRpc.name)(request, context));
+    fake.release(modelAnswer(["h1"]));
+    await waitForTerminal(handlers, fake.paseo, jobId);
+    const status = statusRpc.output.parse(await handlerFor(handlers, statusRpc.name)({ workspaceId: "ws-1", jobId }, context));
+
+    expect(status.document?.chapters[0]?.stops[0]?.hunkIds[0]).toMatch(/^commit:app\.ts:/);
+  });
+
+  it("returns the running job when the Command Center and panel both start a walkthrough", async () => {
+    const repo = await createRepo();
+    const { handlers } = load();
+    const fake = fakePaseo(repo);
+    const handler = handlerFor(handlers, generateRpc.name);
+    const context = { paseo: fake.paseo };
+
+    const [fromPanel, fromCommand] = await Promise.all([
+      handler(generateRpc.input.parse({ workspaceId: "ws-1", scope: "all" }), context),
+      handler(generateRpc.input.parse({ workspaceId: "ws-1" }), context),
+    ]);
+
+    expect(fromCommand).toEqual(fromPanel);
+    const { jobId } = generateRpc.output.parse(fromPanel);
+    fake.release(modelAnswer(["h1"]));
+    const finished = await waitForTerminal(handlers, fake.paseo, jobId);
+    expect(finished.job?.state).toBe("done");
+  });
+
   it("asks the model the reviewer picked and writes the walkthrough in the language they chose", async () => {
     const repo = await createRepo();
     const { handlers } = load();
@@ -287,16 +348,22 @@ describe("walkthrough.generate with a chosen model and language", () => {
     expect(fake.providers).toEqual([]);
   });
 
-  it("uses the default model of the daemon when the reviewer chose none", async () => {
+  it("uses the daemon's default model when explicitly chosen over a remembered model", async () => {
     const repo = await createRepo();
     const { handlers } = load();
     const fake = fakePaseo(repo);
+    const context = { paseo: fake.paseo };
+    await handlerFor(handlers, saveSettingsRpc.name)(
+      saveSettingsRpc.input.parse({ workspaceId: "ws-1", settings: { model: "test/model-2" } }),
+      context,
+    );
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as {
-      jobId: string;
-    };
+    const request = generateRpc.input.parse({ workspaceId: "ws-1", scope: "all", model: null });
+    const { jobId } = generateRpc.output.parse(await handlerFor(handlers, generateRpc.name)(request, context));
 
-    await waitFor(handlers, fake.paseo, generated.jobId, () => fake.providers.length > 0);
+    await waitFor(handlers, fake.paseo, jobId, () => fake.providers.length > 0);
+    fake.release(modelAnswer(["h1"]));
+    await waitForTerminal(handlers, fake.paseo, jobId);
     expect(fake.providers[0]).toBe("test/model-1");
   });
 });

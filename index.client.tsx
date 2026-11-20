@@ -1,12 +1,33 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
+import type { CommandJobListener } from "./client/diff-panel";
 import { createDiffPanel } from "./client/diff-panel";
 import { PANEL_ID } from "./shared/constants";
+import { generateRpc } from "./shared/contracts";
 
 export default function contribute(client: PluginClientContext) {
-  return client.addWorkspacePanel({
+  const commandJobListeners = new Set<CommandJobListener>();
+  const removePanel = client.addWorkspacePanel({
     id: PANEL_ID,
     title: "Walkthrough",
     icon: "GitCompare",
-    Component: createDiffPanel(client),
+    Component: createDiffPanel(client, commandJobListeners),
   });
+  const removeCommand = client.addCommandCenterItem({
+    id: "generate-walkthrough",
+    title: "Generate walkthrough",
+    icon: "GitCompare",
+    context: "workspace",
+    async onSelect({ workspace, rpc, openPanel }) {
+      // Paseo 0.15.4 exposes workspace context here but has no visibility or disabled predicate.
+      if (workspace.projectKind !== "git") return;
+
+      const { jobId } = await rpc(generateRpc, { workspaceId: workspace.id });
+      for (const selectJob of commandJobListeners) selectJob(workspace.id, jobId);
+      openPanel(PANEL_ID);
+    },
+  });
+
+  return async () => {
+    await Promise.all([removeCommand(), removePanel()]);
+  };
 }

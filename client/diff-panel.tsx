@@ -303,7 +303,9 @@ function DocumentView({
   );
 }
 
-export function createDiffPanel(client: PluginClientContext) {
+export type CommandJobListener = (workspaceId: string, jobId: string) => void;
+
+export function createDiffPanel(client: PluginClientContext, commandJobListeners: Set<CommandJobListener>) {
   return function WalkthroughPanel({ workspaceId, theme, layout, tab }: PluginWorkspacePanelProps) {
     const colors = theme.colors;
     // The scope, the model and the language live in the panel state: the host keeps it per
@@ -312,8 +314,9 @@ export function createDiffPanel(client: PluginClientContext) {
     const { scope, model, language } = panelState;
     const storedState = useRef(tab.state);
     const restoredWorkspace = useRef<string | null>(null);
-    const [commit, setCommit] = useState("");
-    const [draft, setDraft] = useState("");
+    const [restoredCommit, setRestoredCommit] = useState<string>();
+    const commit = panelState.commit ?? restoredCommit;
+    const [draft, setDraft] = useState(commit ?? "");
     const [diff, setDiff] = useState<Diff | null>(null);
     const [base, setBase] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -329,9 +332,20 @@ export function createDiffPanel(client: PluginClientContext) {
     const [starting, setStarting] = useState(false);
     const [cancelling, setCancelling] = useState(false);
 
+    useEffect(() => {
+      const selectJob: CommandJobListener = (commandWorkspaceId, commandJobId) => {
+        if (commandWorkspaceId === workspaceId) setJobId(commandJobId);
+      };
+      commandJobListeners.add(selectJob);
+      return () => {
+        commandJobListeners.delete(selectJob);
+      };
+    }, [commandJobListeners, workspaceId]);
+
     const choose = useCallback(
       (next: Partial<PanelState>) => {
         const merged: PanelState = { ...panelState, ...next };
+        storedState.current = merged;
         setPanelState(merged);
         void client.rpc(saveSettingsRpc, { workspaceId, settings: merged }).catch(() => undefined);
       },
@@ -363,6 +377,7 @@ export function createDiffPanel(client: PluginClientContext) {
           if (cancelled) return;
           if (storedState.current !== undefined) return;
           setPanelState(result.settings);
+          if (result.settings.commit !== undefined) setDraft(result.settings.commit);
         },
         () => undefined,
       );
@@ -417,10 +432,10 @@ export function createDiffPanel(client: PluginClientContext) {
           setStaleness(result.staleness);
           if (!jobId && restoredWorkspace.current !== workspaceId) {
             restoredWorkspace.current = workspaceId;
-            const restoredCommit = result.source?.commit;
-            if (restoredCommit) {
-              setCommit((current) => current || restoredCommit);
-              setDraft((current) => current || restoredCommit);
+            const cachedCommit = result.source?.commit;
+            if (cachedCommit) {
+              setRestoredCommit(cachedCommit);
+              setDraft((current) => current || cachedCommit);
             }
           }
           if (!jobId && result.job && RUNNING_STAGES.includes(result.job.state)) {
@@ -446,7 +461,7 @@ export function createDiffPanel(client: PluginClientContext) {
       };
     }, [client, workspaceId, jobId, statusRefresh]);
 
-    const applyCommit = useCallback(() => setCommit(draft.trim()), [draft]);
+    const applyCommit = useCallback(() => choose({ commit: draft.trim() }), [choose, draft]);
 
     const generate = useCallback(() => {
       setStarting(true);

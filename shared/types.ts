@@ -134,14 +134,16 @@ export type ModelOption = z.infer<typeof modelOptionSchema>;
 
 export const workspaceSettingsSchema = z.object({
   scope: z.enum(WALKTHROUGH_SCOPE).default("all"),
+  commit: z.string().optional(),
   model: z.string().nullable().default(null),
   language: z.enum(LANGUAGES).default("en"),
 });
 export type WorkspaceSettings = z.infer<typeof workspaceSettingsSchema>;
 
-/** The per-workspace choices the panel keeps in its own state: the scope, the model, the language. */
+/** The per-workspace choices the panel keeps in its own state. */
 export const panelStateSchema = z.object({
   scope: z.enum(WALKTHROUGH_SCOPE),
+  commit: z.string().optional(),
   model: z.string().nullable(),
   language: z.enum(LANGUAGES),
 });

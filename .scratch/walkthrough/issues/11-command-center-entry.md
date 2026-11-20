@@ -6,9 +6,14 @@
 
 **Status:** ready-for-agent
 
-- [ ] The plugin contributes a Command Center entry that starts a walkthrough for the current workspace.
-- [ ] The entry uses the source, model, and language remembered for that workspace.
-- [ ] Starting from the Command Center opens the walkthrough and shows the generation stages.
+- [x] The plugin contributes a Command Center entry that starts a walkthrough for the current workspace.
+- [x] The entry uses the source, model, and language remembered for that workspace.
+- [x] Starting from the Command Center opens the walkthrough and shows the generation stages.
 - [ ] The entry is hidden or disabled when the workspace has no project to walk through.
-- [ ] The entry does not start a second generation while one is already running for that workspace.
-- [ ] A server-side test drives the RPC boundary and asserts that the entry starts a job with the remembered settings.
+- [x] The entry does not start a second generation while one is already running for that workspace.
+- [x] A server-side test drives the RPC boundary and asserts that the entry starts a job with the remembered settings.
+
+## Comments
+
+- Paseo 0.15.4 supports workspace-scoped Command Center entries. Its contribution type has no visibility or disabled predicate, so the entry remains visible in non-Git workspaces. Selecting it there exits before calling the server or opening the panel.
+- The command uses the saved revision when the source is a single commit. Applying a commit in the panel now remembers its hash alongside the other workspace settings.

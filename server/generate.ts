@@ -164,6 +164,10 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
   return {
     /** Starts the generation in the background and hands the reviewer a job to poll. */
     start(paseo: PaseoApi, request: GenerationRequest): string {
+      const latestId = latest.get(request.workspaceId);
+      const active = latestId ? jobs.get(latestId) : undefined;
+      if (active && !isTerminal(active.state)) return active.id;
+
       const job: Job = {
         id: randomUUID(),
         workspaceId: request.workspaceId,

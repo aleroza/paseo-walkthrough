@@ -24,7 +24,8 @@ export const diffRpc = defineRpc({
 export const generateRpc = defineRpc({
   name: "walkthrough.generate",
   input: sourceRequestSchema.extend({
-    model: z.string().nullable().default(null),
+    scope: sourceRequestSchema.shape.scope.unwrap().optional(),
+    model: z.string().nullable().optional(),
     language: z.string().nullable().default(null),
   }),
   output: z.object({

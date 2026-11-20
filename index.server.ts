@@ -62,9 +62,9 @@ export default function contribute(server: PluginServerContext) {
     const remembered = await readWorkspaceSettings(dir, workspaceId);
     const jobId = service.start(paseo, {
       workspaceId,
-      scope,
-      commit,
-      model: model ?? remembered.model,
+      scope: scope ?? remembered.scope,
+      commit: scope === undefined ? commit ?? remembered.commit : commit,
+      model: model === undefined ? remembered.model : model,
       language: language ?? remembered.language,
     });
     return { jobId };

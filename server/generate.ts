@@ -45,6 +45,13 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 const TERMINAL_STATES: WalkthroughJobState[] = ["done", "failed", "cancelled"];
 const isTerminal = (state: WalkthroughJobState) => TERMINAL_STATES.includes(state);
 
+/** Why the change holds nothing to walk through: the reviewer reads the reason, not a stack. */
+const emptyChangeMessage = (fileCount: number, generatedFileCount: number) => {
+  if (fileCount === 0) return "There are no changes to walk through.";
+  if (generatedFileCount === fileCount) return "Only generated files changed, so there is nothing to walk through.";
+  return "The changed files hold no hunks to read, so there is nothing to walk through.";
+};
+
 /** The generation of a walkthrough: a job the reviewer polls, never a call that blocks the panel. */
 export function createWalkthroughService(deps: { dataDirectory: string }) {
   const jobs = new Map<string, Job>();
@@ -72,13 +79,7 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
       if (!diff.repository) throw new Error("This workspace is not a git repository, so there is nothing to walk through.");
 
       const digest = buildDigest(diff.files, request.scope);
-      if (digest.hunkCount === 0) {
-        throw new Error(
-          diff.files.length === 0
-            ? "There are no changes to walk through."
-            : "Only generated files changed, so there is nothing to walk through.",
-        );
-      }
+      if (digest.hunkCount === 0) throw new Error(emptyChangeMessage(diff.files.length, digest.generatedPaths.length));
       if (job.cancelled) return;
 
       const provider = await resolveModel(paseo, request.model ?? null);

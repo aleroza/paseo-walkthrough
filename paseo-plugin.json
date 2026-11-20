@@ -1,0 +1,8 @@
+{
+  "id": "walkthrough",
+  "name": "Change walkthrough",
+  "description": "Turn a git diff into a reading order: chapters, stops anchored to hunks, and the observations worth your attention.",
+  "requirements": {
+    "paseo": ">=0.15.4"
+  }
+}

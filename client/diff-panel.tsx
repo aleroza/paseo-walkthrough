@@ -3,11 +3,12 @@ import { ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
 import { useCallback, useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
-import { diffRpc } from "../shared/contracts";
-import type { WalkthroughScope } from "../shared/constants";
-import type { Diff, DiffFile, Hunk } from "../shared/types";
+import { diffRpc, generateRpc, statusRpc } from "../shared/contracts";
+import type { WalkthroughJobState, WalkthroughScope } from "../shared/constants";
+import type { Chapter, Diff, DiffFile, Hunk, Stop, WalkthroughDocument } from "../shared/types";
 
 const POLL_MS = 4_000;
+const STATUS_POLL_MS = 1_500;
 
 type Colors = PluginTheme["colors"];
 
@@ -37,6 +38,18 @@ const PENDING: Record<WalkthroughScope, string> = {
   commit: "Enter the hash of the commit to walk through.",
 };
 
+const STAGE_LABELS: Record<WalkthroughJobState, string> = {
+  collecting: "Collecting the change",
+  asking: "Asking the model",
+  retrying: "Retrying",
+  assembling: "Assembling the document",
+  done: "Done",
+  failed: "Failed",
+  cancelled: "Cancelled",
+};
+
+const RUNNING_STAGES: WalkthroughJobState[] = ["collecting", "asking", "retrying", "assembling"];
+
 const statusColor = (colors: Colors, status: DiffFile["status"]) => {
   if (status === "added") return colors.statusSuccess;
   if (status === "deleted") return colors.statusDanger;
@@ -48,6 +61,13 @@ const lineColor = (colors: Colors, line: string) => {
   if (line.startsWith("+")) return colors.statusSuccess;
   if (line.startsWith("-")) return colors.statusDanger;
   return colors.foregroundMuted;
+};
+
+/** The path of the hunk an id names: the id is scope, path and the hash of the hunk. */
+const hunkPath = (id: string) => {
+  const first = id.indexOf(":");
+  const last = id.lastIndexOf(":");
+  return first > 0 && last > first ? id.slice(first + 1, last) : id;
 };
 
 function HunkView({ hunk, colors }: { hunk: Hunk; colors: Colors }) {
@@ -90,6 +110,64 @@ function FileView({ file, generated, colors }: { file: DiffFile; generated: bool
   );
 }
 
+function StopView({ stop, colors }: { stop: Stop; colors: Colors }) {
+  return (
+    <View style={[styles.stop, { borderColor: colors.border }]}>
+      <View style={styles.stopHeader}>
+        <Text style={[styles.stopTitle, { color: colors.foreground }]}>{stop.title}</Text>
+        <Text style={[styles.meta, { color: stop.importance === "critical" ? colors.statusWarning : colors.foregroundMuted }]}>
+          {stop.importance}
+        </Text>
+      </View>
+      <Text style={[styles.prose, { color: colors.foreground }]}>{stop.prose}</Text>
+      <Text style={[styles.meta, { color: colors.foregroundMuted }]}>
+        {stop.hunkIds.map((id) => hunkPath(id)).join(", ")}
+      </Text>
+      {stop.observations.map((observation, index) => (
+        <View key={index} style={[styles.observation, { backgroundColor: colors.surface2 }]}>
+          <Text style={[styles.observationKind, { color: colors.accent }]}>{observation.kind}</Text>
+          <Text style={[styles.prose, { color: colors.foreground }]}>{observation.note}</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function ChapterView({ chapter, colors }: { chapter: Chapter; colors: Colors }) {
+  return (
+    <View style={[styles.chapter, { borderColor: colors.border, backgroundColor: colors.surface1 }]}>
+      <Text style={[styles.chapterTitle, { color: colors.foreground }]}>{chapter.title}</Text>
+      {chapter.blurb ? <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{chapter.blurb}</Text> : null}
+      {chapter.stops.map((stop) => (
+        <StopView key={stop.id} stop={stop} colors={colors} />
+      ))}
+    </View>
+  );
+}
+
+function DocumentView({ document, colors }: { document: WalkthroughDocument; colors: Colors }) {
+  return (
+    <View style={styles.document}>
+      <Text style={[styles.documentTitle, { color: colors.foreground }]}>{document.title}</Text>
+      {document.focus ? <Text style={[styles.prose, { color: colors.foreground }]}>{document.focus}</Text> : null}
+      {document.chapters.map((chapter) => (
+        <ChapterView key={chapter.id} chapter={chapter} colors={colors} />
+      ))}
+      {document.routine.length > 0 ? (
+        <View style={[styles.routine, { borderColor: colors.border }]}>
+          <Text style={[styles.chapterTitle, { color: colors.foreground }]}>Left out of the walkthrough</Text>
+          {document.routine.map((note) => (
+            <View key={note.path} style={styles.routineRow}>
+              <Text style={[styles.path, { color: colors.foreground }]}>{note.path}</Text>
+              <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{note.note}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 export function createDiffPanel(client: PluginClientContext) {
   return function WalkthroughPanel({ workspaceId, theme, layout }: PluginWorkspacePanelProps) {
     const colors = theme.colors;
@@ -99,6 +177,12 @@ export function createDiffPanel(client: PluginClientContext) {
     const [diff, setDiff] = useState<Diff | null>(null);
     const [base, setBase] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [jobId, setJobId] = useState<string | null>(null);
+    const [stage, setStage] = useState<WalkthroughJobState | null>(null);
+    const [stages, setStages] = useState<WalkthroughJobState[]>([]);
+    const [jobError, setJobError] = useState<string | null>(null);
+    const [document, setDocument] = useState<WalkthroughDocument | null>(null);
+    const [starting, setStarting] = useState(false);
 
     const load = useCallback(() => {
       if (scope === "commit" && !commit) {
@@ -123,7 +207,47 @@ export function createDiffPanel(client: PluginClientContext) {
       return () => clearInterval(timer);
     }, [load]);
 
+    const loadStatus = useCallback(() => {
+      client.rpc(statusRpc, { workspaceId, jobId }).then(
+        (result) => {
+          setStage(result.job?.state ?? null);
+          setStages(result.job?.stages ?? []);
+          setJobError(result.job?.error ?? null);
+          setDocument(result.document);
+          if (result.job && result.job.id !== jobId) setJobId(result.job.id);
+        },
+        () => undefined,
+      );
+    }, [client, workspaceId, jobId]);
+
+    const running = stage !== null && RUNNING_STAGES.includes(stage);
+
+    useEffect(() => {
+      loadStatus();
+      if (!running) return;
+      const timer = setInterval(loadStatus, STATUS_POLL_MS);
+      return () => clearInterval(timer);
+    }, [loadStatus, running]);
+
     const applyCommit = useCallback(() => setCommit(draft.trim()), [draft]);
+
+    const generate = useCallback(() => {
+      setStarting(true);
+      client
+        .rpc(generateRpc, { workspaceId, scope, ...(scope === "commit" ? { commit } : {}), model: null, language: "en" })
+        .then(
+          (result) => {
+            setJobId(result.jobId);
+            setJobError(null);
+            setDocument(null);
+            setStarting(false);
+          },
+          (cause: unknown) => {
+            setJobError(cause instanceof Error ? cause.message : String(cause));
+            setStarting(false);
+          },
+        );
+    }, [client, workspaceId, scope, commit]);
 
     const empty = error
       ? null
@@ -177,6 +301,33 @@ export function createDiffPanel(client: PluginClientContext) {
             </Pressable>
           </View>
         ) : null}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Generate the walkthrough"
+          accessibilityState={{ disabled: starting || running }}
+          disabled={starting || running}
+          onPress={generate}
+          style={[styles.generate, { borderColor: colors.border, backgroundColor: running ? colors.surface2 : colors.accent }]}
+        >
+          <Text style={[styles.generateText, { color: running ? colors.foregroundMuted : colors.accentForeground }]}>
+            {running ? "Generating..." : "Generate walkthrough"}
+          </Text>
+        </Pressable>
+        {stage ? (
+          <View style={styles.stages}>
+            <Text style={[styles.stage, { color: colors.foreground }]}>{STAGE_LABELS[stage]}</Text>
+            <View style={styles.trail}>
+              {stages.map((entry, index) => (
+                <Text key={`${entry}-${index}`} style={[styles.meta, { color: colors.foregroundMuted }]}>
+                  {index > 0 ? " · " : ""}
+                  {entry}
+                </Text>
+              ))}
+            </View>
+          </View>
+        ) : null}
+        {jobError ? <Text style={[styles.meta, { color: colors.statusDanger }]}>{jobError}</Text> : null}
+        {document ? <DocumentView document={document} colors={colors} /> : null}
         {error ? <Text style={[styles.meta, { color: colors.statusDanger }]}>{error}</Text> : null}
         {diff ? (
           <Text style={[styles.summary, { color: colors.foreground }]}>
@@ -201,6 +352,11 @@ const styles = StyleSheet.create({
   sourceText: { fontSize: 12, fontWeight: "600" },
   commit: { flexDirection: "row", alignItems: "center", gap: 8 },
   commitInput: { flex: 1, borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, fontSize: 12 },
+  generate: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, alignItems: "center" },
+  generateText: { fontSize: 13, fontWeight: "600" },
+  stages: { gap: 2 },
+  stage: { fontSize: 13, fontWeight: "600" },
+  trail: { flexDirection: "row", flexWrap: "wrap" },
   summary: { fontSize: 13, fontWeight: "600" },
   file: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, padding: 10, gap: 8 },
   fileHeader: { flexDirection: "row", alignItems: "center", gap: 8 },
@@ -209,4 +365,16 @@ const styles = StyleSheet.create({
   hunk: { gap: 2 },
   hunkHeader: { fontSize: 11, fontFamily: "monospace" },
   code: { fontSize: 12, fontFamily: "monospace" },
+  document: { gap: 10 },
+  documentTitle: { fontSize: 16, fontWeight: "700" },
+  chapter: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, padding: 10, gap: 8 },
+  chapterTitle: { fontSize: 14, fontWeight: "700" },
+  stop: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: 8, gap: 4 },
+  stopHeader: { flexDirection: "row", alignItems: "center", gap: 8 },
+  stopTitle: { fontSize: 13, fontWeight: "600", flex: 1 },
+  prose: { fontSize: 13 },
+  observation: { borderRadius: 6, padding: 8, gap: 2 },
+  observationKind: { fontSize: 11, fontWeight: "700" },
+  routine: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, padding: 10, gap: 6 },
+  routineRow: { gap: 2 },
 });

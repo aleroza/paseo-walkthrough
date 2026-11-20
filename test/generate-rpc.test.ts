@@ -1,0 +1,381 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import contribute from "../index.server";
+import { diffRpc, generateRpc, statusRpc } from "../shared/contracts";
+import type { PaseoApi } from "../server/host-types";
+
+let homeRoot = "";
+
+beforeAll(async () => {
+  homeRoot = await mkdtemp(join(tmpdir(), "walkthrough-home-"));
+  vi.stubEnv("PASEO_HOME", join(homeRoot, "home"));
+});
+
+afterAll(async () => {
+  vi.unstubAllEnvs();
+  await rm(homeRoot, { recursive: true, force: true });
+});
+
+async function createRepo(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "walkthrough-repo-"));
+  onTestFinished(() => rm(dir, { recursive: true, force: true }));
+  const { execFile } = await import("node:child_process");
+  const git = (args: string[]) =>
+    new Promise<void>((done, fail) => {
+      execFile("git", args, { cwd: dir }, (error) => (error ? fail(error) : done()));
+    });
+  await git(["init", "-q", "-b", "main", "."]);
+  await git(["config", "user.email", "test@example.com"]);
+  await git(["config", "user.name", "Test"]);
+  await writeFile(join(dir, "app.ts"), "const a = 1;\nconst b = 2;\nconst c = 3;\n");
+  await git(["add", "-A"]);
+  await git(["commit", "-qm", "init"]);
+  return dir;
+}
+
+interface AgentCreation {
+  provider: string;
+  cwd: string;
+  background?: boolean;
+  workspaceId?: string;
+}
+
+interface FakePaseo {
+  paseo: PaseoApi;
+  creations: AgentCreation[];
+  prompts: string[];
+  release(answer: string): void;
+  promptCount(): number;
+}
+
+interface FakeOptions {
+  /** 0.16.2 and newer accept a background agent inside a workspace; 0.15.4 refuses it. */
+  backgroundAgentInWorkspace: boolean;
+}
+
+/** The daemon the plugin talks to: the model is stubbed at the agent boundary. */
+function fakePaseo(directory: string, options: FakeOptions): FakePaseo {
+  const creations: AgentCreation[] = [];
+  const prompts: string[] = [];
+  let queued: string | null = null;
+  let waiting: ((answer: string) => void) | null = null;
+
+  const nextAnswer = () =>
+    queued !== null
+      ? Promise.resolve(queued)
+      : new Promise<string>((resolve) => {
+          waiting = resolve;
+          queued = null;
+        });
+
+  const workspace = { id: "ws-1", workspaceDirectory: directory };
+  const handle = {
+    id: workspace.id,
+    get directory() {
+      return workspace.workspaceDirectory;
+    },
+    current: () => workspace,
+    refresh: async () => workspace,
+  };
+
+  const paseo = {
+    workspaces: {
+      ref: () => handle,
+      list: async () => ({ entries: [workspace], pageInfo: {}, requestId: "r" }),
+    },
+    providers: {
+      listAvailable: async () => ({ providers: [{ provider: "test", available: true }], requestId: "r" }),
+      listModels: async () => ({
+        provider: "test",
+        models: [{ provider: "test", id: "model-1", label: "Model 1", isDefault: true, isSelectable: true }],
+        requestId: "r",
+      }),
+    },
+    agents: {
+      create: async (agentOptions: AgentCreation) => {
+        creations.push(agentOptions);
+        if (agentOptions.workspaceId && !options.backgroundAgentInWorkspace) {
+          throw new Error("background is workspace creation intent; configure the selected workspace at creation.");
+        }
+        return {
+          id: `agent-${creations.length}`,
+          async run(text: string) {
+            prompts.push(text);
+            const answer = await nextAnswer();
+            return { status: "idle", final: null, error: null, lastMessage: answer };
+          },
+          async archive() {
+            return { archivedAt: "2026-01-01T00:00:00.000Z" };
+          },
+        };
+      },
+    },
+  } as unknown as PaseoApi;
+
+  return {
+    paseo,
+    creations,
+    prompts,
+    release(answer: string) {
+      if (waiting) {
+        const resolve = waiting;
+        waiting = null;
+        resolve(answer);
+        return;
+      }
+      queued = answer;
+    },
+    promptCount: () => prompts.length,
+  };
+}
+
+/** The plugin as Paseo loads it: contribute() with a server that records the RPC handlers. */
+function load() {
+  const handlers = new Map<string, (input: unknown, context: unknown) => Promise<unknown>>();
+  const server = {
+    registerSettings: () => ({ read: async () => ({ status: "ready", revision: "0", values: {} }), subscribe: () => () => {} }),
+    handle: (contract: { name: string }, handler: (input: unknown, context: unknown) => Promise<unknown>) => handlers.set(contract.name, handler),
+    addHook: () => () => {},
+    on: () => {},
+  };
+  const cleanup = contribute(server as never);
+  return { handlers, cleanup };
+}
+
+type Handler = (input: unknown, context: unknown) => Promise<unknown>;
+
+const handlerFor = (handlers: Map<string, Handler>, name: string): Handler => {
+  const handler = handlers.get(name);
+  if (!handler) throw new Error(`no handler registered for ${name}`);
+  return handler;
+};
+
+const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+
+const waitUntil = async (ready: () => boolean) => {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (ready()) return;
+    await sleep(5);
+  }
+  throw new Error("the condition never became true");
+};
+
+interface JobStatusView {
+  job: { id: string; state: string; stages: string[]; error: string | null } | null;
+  document: {
+    title: string;
+    focus: string;
+    chapters: {
+      id: string;
+      title: string;
+      icon: string;
+      stops: { id: string; title: string; hunkIds: string[]; importance: string; prose: string; observations: { kind: string; note: string }[] }[];
+    }[];
+    routine: { path: string; note: string }[];
+    droppedAnchors: number;
+  } | null;
+}
+
+const callStatus = async (handlers: Map<string, Handler>, paseo: PaseoApi, jobId: string): Promise<JobStatusView> =>
+  (await handlerFor(handlers, statusRpc.name)({ workspaceId: "ws-1", jobId }, { paseo })) as JobStatusView;
+
+const waitFor = async (
+  handlers: Map<string, Handler>,
+  paseo: PaseoApi,
+  jobId: string,
+  ready: (status: JobStatusView) => boolean,
+): Promise<JobStatusView> => {
+  let last: JobStatusView | null = null;
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const status = await callStatus(handlers, paseo, jobId);
+    last = status;
+    if (ready(status)) return status;
+    await sleep(5);
+  }
+  throw new Error(`the job never reached the expected state: ${JSON.stringify(last)}`);
+};
+
+const waitForTerminal = (handlers: Map<string, Handler>, paseo: PaseoApi, jobId: string) =>
+  waitFor(handlers, paseo, jobId, (status) => status.job?.state === "done" || status.job?.state === "failed" || status.job?.state === "cancelled");
+
+const modelAnswer = (aliases: string[]) =>
+  JSON.stringify({
+    title: "The change",
+    focus: "The panel can now show a walkthrough of the working tree.",
+    chapters: [
+      {
+        title: "The new value",
+        icon: "bug",
+        blurb: "One stop for the line that changed.",
+        stops: [
+          {
+            title: "The value moved",
+            hunks: aliases,
+            importance: "critical",
+            prose: "The constant now holds the new value, and every caller reads it from this one place.",
+            observations: [{ kind: "decision", note: "The value is kept in a single constant." }],
+          },
+        ],
+      },
+    ],
+    routine: [{ path: "app.ts", note: "The changed line." }],
+  });
+
+describe("walkthrough.generate", () => {
+  it("starts a background job, shows its stages and answers with the document", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    const { handlers } = load();
+    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
+
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    expect(typeof generated.jobId).toBe("string");
+
+    const asking = await waitFor(handlers, fake.paseo, generated.jobId, (status) => status.job?.state === "asking");
+    expect(asking.job?.state).toBe("asking");
+
+    fake.release(modelAnswer(["h1"]));
+
+    const finished = await waitForTerminal(handlers, fake.paseo, generated.jobId);
+    expect(finished.job?.state).toBe("done");
+    expect(finished.job?.error).toBeNull();
+    expect(finished.job?.stages).toEqual(["collecting", "asking", "assembling", "done"]);
+    expect(finished.document?.title).toBe("The change");
+    expect(finished.document?.focus).toContain("walkthrough");
+    expect(finished.document?.chapters[0]?.stops[0]?.prose).toContain("new value");
+    expect(finished.document?.chapters[0]?.stops[0]?.observations[0]?.kind).toBe("decision");
+  });
+
+  it("names the hunks a stop explains by their stable identity", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    const { handlers } = load();
+    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
+
+    const diff = (await handlerFor(handlers, diffRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as {
+      diff: { files: { path: string; hunks: { id: string }[] }[] } | null;
+    };
+    const hunkId = diff.diff?.files[0]?.hunks[0]?.id ?? "";
+
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    await waitFor(handlers, fake.paseo, generated.jobId, (status) => status.job?.state === "asking");
+    fake.release(modelAnswer(["h1"]));
+    const finished = await waitForTerminal(handlers, fake.paseo, generated.jobId);
+
+    expect(hunkId).toMatch(/^all:app\.ts:[0-9a-f]{8}$/);
+    expect(finished.document?.chapters[0]?.stops[0]?.hunkIds).toEqual([hunkId]);
+  });
+
+  it("retries a malformed answer with the validation errors and finishes on the next one", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    const { handlers } = load();
+    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
+
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    await waitFor(handlers, fake.paseo, generated.jobId, (status) => status.job?.state === "asking");
+    fake.release("this is not json at all");
+
+    const retrying = await waitFor(handlers, fake.paseo, generated.jobId, (status) => status.job?.stages.includes("retrying") === true);
+    expect(retrying.job?.stages).toContain("retrying");
+    expect(fake.promptCount()).toBe(2);
+    expect(fake.prompts[1]).toContain("rejected");
+
+    fake.release(modelAnswer(["h1"]));
+    const finished = await waitForTerminal(handlers, fake.paseo, generated.jobId);
+
+    expect(finished.job?.state).toBe("done");
+    expect(finished.job?.stages).toEqual(["collecting", "asking", "assembling", "retrying", "asking", "assembling", "done"]);
+    expect(finished.document?.chapters).toHaveLength(1);
+  });
+
+  it("fails with a readable message after a third malformed answer", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    const { handlers } = load();
+    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
+
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await waitFor(handlers, fake.paseo, generated.jobId, (status) => fake.promptCount() > attempt);
+      fake.release("this is not json at all");
+    }
+
+    const finished = await waitForTerminal(handlers, fake.paseo, generated.jobId);
+    expect(finished.job?.state).toBe("failed");
+    expect(finished.job?.error).toContain("walkthrough");
+    expect(finished.document).toBeNull();
+    expect(fake.promptCount()).toBe(3);
+  });
+
+  it("reads a partial answer the way a reader would: the missing parts get their defaults", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    const { handlers } = load();
+    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
+
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    await waitFor(handlers, fake.paseo, generated.jobId, (status) => status.job?.state === "asking");
+    fake.release(
+      JSON.stringify({
+        chapters: [{ title: "The value", stops: [{ title: "The value moved", hunks: ["h1"], prose: "The constant now holds the new value." }] }],
+        routine: [],
+      }),
+    );
+
+    const finished = await waitForTerminal(handlers, fake.paseo, generated.jobId);
+    expect(finished.job?.state).toBe("done");
+    expect(finished.document?.title).toBe("Change walkthrough");
+    expect(finished.document?.focus).toBe("");
+    expect(finished.document?.chapters[0]?.icon).toBe("doc");
+    expect(finished.document?.chapters[0]?.stops[0]?.importance).toBe("normal");
+    expect(finished.document?.chapters[0]?.stops[0]?.observations).toEqual([]);
+    expect(finished.document?.chapters[0]?.stops[0]?.hunkIds).toHaveLength(1);
+  });
+
+  it("runs the model in a hidden agent that never sees the repository", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    const { handlers } = load();
+    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
+
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    await waitUntil(() => fake.promptCount() > 0);
+
+    const creation = fake.creations[0];
+    expect(creation?.background).toBe(true);
+    expect(creation?.cwd.startsWith(join(homeRoot, "home", "plugin-data", "walkthrough"))).toBe(true);
+    expect(creation?.cwd).not.toContain(repo);
+    expect(fake.prompts[0]).toContain("app.ts");
+    expect(fake.prompts[0]).toContain("h1");
+  });
+
+  it("creates the hidden agent in the workspace on a daemon that allows it", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    const { handlers } = load();
+    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
+
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    await waitUntil(() => fake.promptCount() > 0);
+
+    expect(fake.creations[0]?.workspaceId).toBe("ws-1");
+  });
+
+  it("lets the daemon make a background workspace on a daemon that refuses a background agent in a workspace", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    const { handlers } = load();
+    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: false });
+
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    await waitUntil(() => fake.promptCount() > 0);
+
+    expect(fake.creations).toHaveLength(2);
+    expect(fake.creations[0]?.workspaceId).toBe("ws-1");
+    expect(fake.creations[1]?.workspaceId).toBeUndefined();
+    expect(fake.creations[1]?.background).toBe(true);
+  });
+});

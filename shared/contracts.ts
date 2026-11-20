@@ -16,6 +16,8 @@ export const diffRpc = defineRpc({
   output: z.object({
     diff: diffSchema.nullable(),
     error: z.string().nullable(),
+    /** The base the branch source compared against, when it detected one. */
+    base: z.string().nullable().default(null),
   }),
 });
 

@@ -1,14 +1,39 @@
 import type { PluginClientContext, PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
-import { ScrollView } from "@getpaseo/plugin/client/ui";
+import { ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
 import { useCallback, useEffect, useState } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { diffRpc } from "../shared/contracts";
+import type { WalkthroughScope } from "../shared/constants";
 import type { Diff, DiffFile, Hunk } from "../shared/types";
 
 const POLL_MS = 4_000;
 
 type Colors = PluginTheme["colors"];
+
+const SOURCES: { scope: WalkthroughScope; label: string }[] = [
+  { scope: "all", label: "All" },
+  { scope: "staged", label: "Staged" },
+  { scope: "unstaged", label: "Unstaged" },
+  { scope: "branch", label: "Branch" },
+  { scope: "commit", label: "Commit" },
+];
+
+const EMPTY: Record<WalkthroughScope, string> = {
+  all: "No changes in the working tree.",
+  staged: "Nothing is staged.",
+  unstaged: "No unstaged changes.",
+  branch: "This branch has no changes against its base.",
+  commit: "That commit changed no files.",
+};
+
+const PENDING: Record<WalkthroughScope, string> = {
+  all: "Reading the working tree...",
+  staged: "Reading the staged changes...",
+  unstaged: "Reading the unstaged changes...",
+  branch: "Reading the branch...",
+  commit: "Enter the hash of the commit to walk through.",
+};
 
 const statusColor = (colors: Colors, status: DiffFile["status"]) => {
   if (status === "added") return colors.statusSuccess;
@@ -66,18 +91,29 @@ function FileView({ file, generated, colors }: { file: DiffFile; generated: bool
 export function createDiffPanel(client: PluginClientContext) {
   return function WalkthroughPanel({ workspaceId, theme, layout }: PluginWorkspacePanelProps) {
     const colors = theme.colors;
+    const [scope, setScope] = useState<WalkthroughScope>("all");
+    const [commit, setCommit] = useState("");
+    const [draft, setDraft] = useState("");
     const [diff, setDiff] = useState<Diff | null>(null);
+    const [base, setBase] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
 
     const load = useCallback(() => {
-      client.rpc(diffRpc, { workspaceId, scope: "all" }).then(
+      if (scope === "commit" && !commit) {
+        setDiff(null);
+        setBase(null);
+        setError(null);
+        return;
+      }
+      client.rpc(diffRpc, { workspaceId, scope, ...(scope === "commit" ? { commit } : {}) }).then(
         (result) => {
           setDiff(result.diff);
+          setBase(result.base ?? null);
           setError(result.error);
         },
         (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)),
       );
-    }, [client, workspaceId]);
+    }, [client, workspaceId, scope, commit]);
 
     useEffect(() => {
       load();
@@ -85,24 +121,65 @@ export function createDiffPanel(client: PluginClientContext) {
       return () => clearInterval(timer);
     }, [load]);
 
+    const applyCommit = useCallback(() => setCommit(draft.trim()), [draft]);
+
     const empty = error
       ? null
       : !diff
-        ? "Reading the working tree..."
+        ? PENDING[scope]
         : !diff.repository
           ? "This workspace is not a git repository, so there is nothing to walk through."
           : diff.files.length === 0
-            ? "No changes in the working tree."
+            ? EMPTY[scope]
             : null;
 
     return (
       <ScrollView style={{ flex: 1, backgroundColor: colors.surface0 }} contentContainerStyle={[styles.content, layout.compact && styles.contentCompact]}>
+        <View style={styles.sources}>
+          {SOURCES.map((source) => {
+            const active = source.scope === scope;
+            return (
+              <Pressable
+                key={source.scope}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                accessibilityLabel={`Show the ${source.label} changes`}
+                onPress={() => setScope(source.scope)}
+                style={[styles.source, { borderColor: colors.border, backgroundColor: active ? colors.accent : colors.surface1 }]}
+              >
+                <Text style={[styles.sourceText, { color: active ? colors.accentForeground : colors.foreground }]}>{source.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        {scope === "commit" ? (
+          <View style={styles.commit}>
+            <TextInput
+              value={draft}
+              onChangeText={setDraft}
+              onSubmitEditing={applyCommit}
+              placeholder="Commit hash"
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={[styles.commitInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.surface1 }]}
+            />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Show the commit"
+              onPress={applyCommit}
+              style={[styles.source, { borderColor: colors.border, backgroundColor: colors.accent }]}
+            >
+              <Text style={[styles.sourceText, { color: colors.accentForeground }]}>Show</Text>
+            </Pressable>
+          </View>
+        ) : null}
         {error ? <Text style={[styles.meta, { color: colors.statusDanger }]}>{error}</Text> : null}
         {diff ? (
           <Text style={[styles.summary, { color: colors.foreground }]}>
             {`${diff.fileCount} ${diff.fileCount === 1 ? "file" : "files"}, ${diff.hunkCount} ${diff.hunkCount === 1 ? "hunk" : "hunks"}`}
           </Text>
         ) : null}
+        {base ? <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{`compared against ${base}`}</Text> : null}
         {empty ? <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{empty}</Text> : null}
         {diff?.files.map((file) => (
           <FileView key={file.path} file={file} generated={diff.generatedPaths.includes(file.path)} colors={colors} />
@@ -115,6 +192,11 @@ export function createDiffPanel(client: PluginClientContext) {
 const styles = StyleSheet.create({
   content: { padding: 16, gap: 10 },
   contentCompact: { padding: 12 },
+  sources: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  source: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 },
+  sourceText: { fontSize: 12, fontWeight: "600" },
+  commit: { flexDirection: "row", alignItems: "center", gap: 8 },
+  commitInput: { flex: 1, borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, fontSize: 12 },
   summary: { fontSize: 13, fontWeight: "600" },
   file: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, padding: 10, gap: 8 },
   fileHeader: { flexDirection: "row", alignItems: "center", gap: 8 },

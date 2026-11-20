@@ -31,16 +31,41 @@ function git(cwd: string, args: string[]): Promise<string> {
   });
 }
 
-async function createRepo(): Promise<string> {
+async function createRepo(branch = "main"): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "walkthrough-repo-"));
   onTestFinished(() => rm(dir, { recursive: true, force: true }));
-  await git(dir, ["init", "-q", "-b", "main", "."]);
+  await git(dir, ["init", "-q", "-b", branch, "."]);
   await git(dir, ["config", "user.email", "test@example.com"]);
   await git(dir, ["config", "user.name", "Test"]);
   await writeFile(join(dir, "app.ts"), "const a = 1;\nconst b = 2;\nconst c = 3;\n");
   await git(dir, ["add", "-A"]);
   await git(dir, ["commit", "-qm", "init"]);
   return dir;
+}
+
+/** A clone of a bare remote whose default branch is not a conventional name, so only the remote knows the base. */
+async function createRepoWithRemote(): Promise<string> {
+  const remote = await mkdtemp(join(tmpdir(), "walkthrough-remote-"));
+  onTestFinished(() => rm(remote, { recursive: true, force: true }));
+  await git(remote, ["init", "-q", "--bare", "-b", "release-base", "."]);
+
+  const seed = await mkdtemp(join(tmpdir(), "walkthrough-seed-"));
+  onTestFinished(() => rm(seed, { recursive: true, force: true }));
+  await git(seed, ["init", "-q", "-b", "release-base", "."]);
+  await git(seed, ["config", "user.email", "test@example.com"]);
+  await git(seed, ["config", "user.name", "Test"]);
+  await writeFile(join(seed, "app.ts"), "const a = 1;\nconst b = 2;\nconst c = 3;\n");
+  await git(seed, ["add", "-A"]);
+  await git(seed, ["commit", "-qm", "init"]);
+  await git(seed, ["remote", "add", "origin", remote]);
+  await git(seed, ["push", "-q", "-u", "origin", "release-base"]);
+
+  const repo = await mkdtemp(join(tmpdir(), "walkthrough-clone-"));
+  onTestFinished(() => rm(repo, { recursive: true, force: true }));
+  await git(repo, ["clone", "-q", remote, "."]);
+  await git(repo, ["config", "user.email", "test@example.com"]);
+  await git(repo, ["config", "user.name", "Test"]);
+  return repo;
 }
 
 function fakePaseo(directory: string): PaseoApi {
@@ -81,6 +106,7 @@ async function callDiff(directory: string, input: Record<string, unknown> = {}) 
   return (await handler({ workspaceId: "ws-1", scope: "all", ...input }, { paseo: fakePaseo(directory) })) as {
     diff: { files: { path: string; status: string; hunks: { header: string; added: number; deleted: number; patch: string }[] }[]; hunkCount: number; fileCount: number; repository: boolean } | null;
     error: string | null;
+    base: string | null;
   };
 }
 
@@ -139,10 +165,15 @@ describe("walkthrough.diff", () => {
   it("leaves the working tree exactly as it was", async () => {
     const repo = await createRepo();
     await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    const head = (await git(repo, ["rev-parse", "HEAD"])).trim();
     const statusBefore = await git(repo, ["status", "--porcelain"]);
     const treeBefore = await listTree(repo);
 
     await callDiff(repo);
+    await callDiff(repo, { scope: "staged" });
+    await callDiff(repo, { scope: "unstaged" });
+    await callDiff(repo, { scope: "branch" });
+    await callDiff(repo, { scope: "commit", commit: head });
 
     expect(await git(repo, ["status", "--porcelain"])).toBe(statusBefore);
     expect(await listTree(repo)).toEqual(treeBefore);
@@ -240,5 +271,114 @@ describe("walkthrough.diff", () => {
     expect(result.diff).toBeNull();
     expect(result.error).toContain("full commit hash");
     await expect(stat(target)).rejects.toThrow();
+  });
+
+  it("collects the diff of each of the five sources", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["commit", "-qm", "second"]);
+    const second = (await git(repo, ["rev-parse", "HEAD"])).trim();
+
+    await git(repo, ["checkout", "-qb", "feature"]);
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 222;\nconst c = 3;\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["commit", "-qm", "feature work"]);
+
+    await writeFile(join(repo, "staged.ts"), "export const staged = 1;\n");
+    await git(repo, ["add", "-A"]);
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 2222;\nconst c = 3;\n");
+
+    const all = await callDiff(repo, { scope: "all" });
+    const staged = await callDiff(repo, { scope: "staged" });
+    const unstaged = await callDiff(repo, { scope: "unstaged" });
+    const branch = await callDiff(repo, { scope: "branch" });
+    const commit = await callDiff(repo, { scope: "commit", commit: second });
+
+    expect(all.error).toBeNull();
+    expect(all.diff?.files.map((file) => file.path)).toEqual(["app.ts", "staged.ts"]);
+    expect(staged.diff?.files.map((file) => file.path)).toEqual(["staged.ts"]);
+    expect(unstaged.diff?.files.map((file) => file.path)).toEqual(["app.ts"]);
+    expect(unstaged.diff?.files[0].hunks[0].patch).toContain("+const b = 2222;");
+    expect(branch.diff?.files.map((file) => file.path)).toEqual(["app.ts"]);
+    expect(branch.diff?.files[0].hunks[0].patch).toContain("+const b = 222;");
+    expect(commit.diff?.files.map((file) => file.path)).toEqual(["app.ts"]);
+    expect(commit.diff?.files[0].hunks[0].patch).toContain("+const b = 22;");
+  });
+
+  it("compares the current branch against the base branch it detects", async () => {
+    const repo = await createRepo();
+    await git(repo, ["checkout", "-qb", "feature"]);
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["commit", "-qm", "feature work"]);
+
+    const result = await callDiff(repo, { scope: "branch" });
+
+    expect(result.error).toBeNull();
+    expect(result.base).toBe("main");
+    expect(result.diff?.fileCount).toBe(1);
+    expect(result.diff?.files[0].hunks[0].patch).toContain("+const b = 22;");
+  });
+
+  it("detects the base branch from the default branch of the remote", async () => {
+    const repo = await createRepoWithRemote();
+    await git(repo, ["checkout", "-qb", "feature"]);
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["commit", "-qm", "feature work"]);
+
+    const result = await callDiff(repo, { scope: "branch" });
+
+    expect(result.error).toBeNull();
+    expect(result.base).toBe("origin/release-base");
+    expect(result.diff?.fileCount).toBe(1);
+    expect(result.diff?.files[0].hunks[0].patch).toContain("+const b = 22;");
+  });
+
+  it("falls back to the first commit when the repository knows no base branch", async () => {
+    const repo = await createRepo("solo");
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["commit", "-qm", "second"]);
+
+    const result = await callDiff(repo, { scope: "branch" });
+
+    expect(result.error).toBeNull();
+    expect(result.base).toBe("the first commit");
+    expect(result.diff?.fileCount).toBe(1);
+    expect(result.diff?.files[0].hunks[0].patch).toContain("+const b = 22;");
+  });
+
+  it("gives a repository without commits an empty branch diff", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "walkthrough-empty-"));
+    onTestFinished(() => rm(dir, { recursive: true, force: true }));
+    await git(dir, ["init", "-q", "-b", "main", "."]);
+
+    const result = await callDiff(dir, { scope: "branch" });
+
+    expect(result.error).toBeNull();
+    expect(result.diff?.repository).toBe(true);
+    expect(result.diff?.fileCount).toBe(0);
+    expect(result.base).toBeNull();
+  });
+
+  it("gives a branch that matches its base an empty diff", async () => {
+    const repo = await createRepo();
+
+    const result = await callDiff(repo, { scope: "branch" });
+
+    expect(result.error).toBeNull();
+    expect(result.diff?.fileCount).toBe(0);
+    expect(result.diff?.hunkCount).toBe(0);
+  });
+
+  it("gives a repository with nothing staged an empty staged diff", async () => {
+    const repo = await createRepo();
+
+    const result = await callDiff(repo, { scope: "staged" });
+
+    expect(result.error).toBeNull();
+    expect(result.diff?.fileCount).toBe(0);
   });
 });

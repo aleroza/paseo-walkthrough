@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "v
 import contribute from "../index.server";
 import { diffRpc, generateRpc, statusRpc } from "../shared/contracts";
 import type { PaseoApi } from "../server/host-types";
+import type { Staleness } from "../shared/types";
 
 let homeRoot = "";
 
@@ -19,7 +20,7 @@ afterAll(async () => {
   await rm(homeRoot, { recursive: true, force: true });
 });
 
-async function createRepo(names: string[]): Promise<string> {
+async function createRepo(names: string[], contents: Record<string, string> = {}): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "walkthrough-repo-"));
   onTestFinished(() => rm(dir, { recursive: true, force: true }));
   const git = (args: string[]) =>
@@ -29,7 +30,7 @@ async function createRepo(names: string[]): Promise<string> {
   await git(["init", "-q", "-b", "main", "."]);
   await git(["config", "user.email", "test@example.com"]);
   await git(["config", "user.name", "Test"]);
-  for (const name of names) await writeFile(join(dir, name), `export const ${name.replace(/\W/g, "_")} = 1;\n`);
+  for (const name of names) await writeFile(join(dir, name), contents[name] ?? `export const ${name.replace(/\W/g, "_")} = 1;\n`);
   await git(["add", "-A"]);
   await git(["commit", "-qm", "init"]);
   return dir;
@@ -155,6 +156,7 @@ interface DocumentView {
 interface StatusView {
   job: { id: string; state: string; stages: string[]; error: string | null } | null;
   document: DocumentView | null;
+  staleness: Staleness | null;
 }
 
 const callStatus = async (handlers: Map<string, Handler>, paseo: PaseoApi, jobId: string): Promise<StatusView> =>
@@ -197,6 +199,42 @@ const oneStop = (hunks: string[], prose: string) => ({
 });
 
 describe("the walkthrough document", () => {
+  it("reports stale stops, new hunks and removed hunks when the working tree changes", async () => {
+    const bContents = (first: number, last: number) =>
+      `export const first = ${first};\n${"\n".repeat(12)}export const last = ${last};\n`;
+    const repo = await createRepo(["a.ts", "b.ts"], { "b.ts": bContents(1, 1) });
+    await writeFile(join(repo, "a.ts"), "export const a_ts = 2;\n");
+    await writeFile(join(repo, "b.ts"), bContents(2, 1));
+    const { handlers } = load();
+    const fake = fakePaseo(repo);
+    const original = await hunkIdsOf(handlers, fake.paseo);
+    const { jobId } = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    fake.release(answer({
+      chapters: [{
+        stops: [oneStop(["h1"], "The value of a.ts moved."), oneStop(["h2"], "The value of b.ts moved.")],
+      }],
+    }));
+    const finished = await waitForTerminal(handlers, fake.paseo, jobId);
+    expect(finished.job?.state).toBe("done");
+    expect(finished.staleness?.stale).toBe(false);
+
+    await writeFile(join(repo, "a.ts"), "export const a_ts = 3;\n");
+    await writeFile(join(repo, "b.ts"), bContents(1, 2));
+    await writeFile(join(repo, "c.ts"), "export const c_ts = 1;\n");
+    const [changed, addedToExistingFile, added] = await hunkIdsOf(handlers, fake.paseo);
+    expect(changed).toMatch(/^all:a\.ts:/);
+    expect(addedToExistingFile).toMatch(/^all:b\.ts:/);
+    expect(added).toMatch(/^all:c\.ts:/);
+
+    const edited = await callStatus(handlers, fake.paseo, jobId);
+    expect(edited.staleness).toMatchObject({
+      stale: true,
+      staleStopIds: ["stop-1-1"],
+      uncoveredHunkIds: [changed, addedToExistingFile, added],
+      missingHunkIds: [original[1]],
+    });
+  }, 30_000);
+
   it("reads as chapters of stops, with the observations, the skipped files and the hunks no stop covered", async () => {
     const repo = await createRepo(["app.ts", "lib.ts"]);
     await writeFile(join(repo, "app.ts"), "export const app_ts = 2;\n");

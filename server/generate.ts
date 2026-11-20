@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { WalkthroughJobState, WalkthroughScope } from "../shared/constants";
 import { DEFAULT_LANGUAGE, MAX_MODEL_ATTEMPTS } from "../shared/constants";
-import type { JobStatus, WalkthroughDocument, WalkthroughJob } from "../shared/types";
+import type { JobStatus, SourceRequest, WalkthroughDocument, WalkthroughJob } from "../shared/types";
 import type { HiddenAgent } from "./agent";
 import { createHiddenAgent } from "./agent";
 import { collectDiff } from "./diff";
@@ -12,6 +12,7 @@ import { InvalidWalkthroughError, modelOutputSchema, normalizeWalkthrough, readM
 import type { PaseoApi } from "./host-types";
 import { resolveModel } from "./models";
 import { buildPrompt, normalizeLanguage, retryPrompt } from "./prompt";
+import { readStaleness, snapshotHunks } from "./staleness";
 import { resolveWorkspaceDirectory } from "./workspace";
 
 export interface GenerationRequest {
@@ -30,6 +31,8 @@ interface Job {
   error: string | null;
   startedAt: number;
   document: WalkthroughDocument | null;
+  source: SourceRequest;
+  builtHunks: ReturnType<typeof snapshotHunks> | null;
   cancelled: boolean;
   /** The agent the model is running in, while there is one. */
   agent: HiddenAgent | null;
@@ -120,6 +123,7 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
           if (job.cancelled) return;
           setStage(job, "assembling");
           job.document = normalizeWalkthrough(readModelDocument(answer), digest.idByAlias, digest.digest.files);
+          job.builtHunks = snapshotHunks(diff.files);
           setStage(job, "done");
           return;
         } catch (error) {
@@ -164,6 +168,8 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
         error: null,
         startedAt: Date.now(),
         document: null,
+        source: { workspaceId: request.workspaceId, scope: request.scope, commit: request.commit },
+        builtHunks: null,
         cancelled: false,
         agent: null,
       };
@@ -177,7 +183,7 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
       return job.id;
     },
 
-    status(workspaceId: string, jobId: string | null): JobStatus {
+    async status(paseo: PaseoApi, workspaceId: string, jobId: string | null): Promise<JobStatus> {
       const wanted = jobId ?? latest.get(workspaceId) ?? null;
       const job = wanted ? jobs.get(wanted) : undefined;
       if (!job || job.workspaceId !== workspaceId) return { job: null, document: null, staleness: null };
@@ -190,7 +196,9 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
         error: job.error,
         startedAt: job.startedAt,
       };
-      return { job: view, document: job.document, staleness: null };
+      const document = job.document;
+      const staleness = document && job.builtHunks ? await readStaleness(paseo, job.source, document, job.builtHunks) : null;
+      return { job: view, document, staleness };
     },
 
     cancel(workspaceId: string, jobId: string): { cancelled: boolean; error: string | null } {

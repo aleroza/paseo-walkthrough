@@ -70,7 +70,7 @@ export default function contribute(server: PluginServerContext) {
     return { jobId };
   });
 
-  server.handle(statusRpc, async ({ workspaceId, jobId }) => service.status(workspaceId, jobId));
+  server.handle(statusRpc, async ({ workspaceId, jobId }, { paseo }) => service.status(paseo, workspaceId, jobId));
 
   server.handle(cancelRpc, async ({ workspaceId, jobId }) => service.cancel(workspaceId, jobId));
 

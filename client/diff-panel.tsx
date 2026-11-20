@@ -234,10 +234,19 @@ function UncoveredView({ document, hunks, colors }: { document: WalkthroughDocum
   );
 }
 
-function StalenessView({ document, staleness, colors }: { document: WalkthroughDocument; staleness: Staleness | null; colors: Colors }) {
+function StalenessView({
+  document,
+  staleness,
+  staleStopIds,
+  colors,
+}: {
+  document: WalkthroughDocument;
+  staleness: Staleness | null;
+  staleStopIds: Set<string>;
+  colors: Colors;
+}) {
   if (staleness?.stale === false) return null;
-  const stopIds = new Set(staleness?.staleStopIds);
-  const staleStops = document.chapters.flatMap((chapter) => chapter.stops).filter((stop) => stopIds.has(stop.id));
+  const staleStops = document.chapters.flatMap((chapter) => chapter.stops).filter((stop) => staleStopIds.has(stop.id));
 
   return (
     <View style={[styles.section, { borderColor: colors.statusWarning }]}>
@@ -278,15 +287,15 @@ function DocumentView({
   hunks: Map<string, Hunk>;
   colors: Colors;
 }) {
-  const staleStops = new Set(staleness?.staleStopIds);
+  const staleStopIds = new Set(staleness?.staleStopIds);
   return (
     <View style={styles.document}>
-      <StalenessView document={document} staleness={staleness} colors={colors} />
+      <StalenessView document={document} staleness={staleness} staleStopIds={staleStopIds} colors={colors} />
       <Text style={[styles.documentTitle, { color: colors.foreground }]}>{document.title}</Text>
       {document.focus ? <Text style={[styles.prose, { color: colors.foreground }]}>{document.focus}</Text> : null}
       <ContentsView document={document} colors={colors} />
       {document.chapters.map((chapter) => (
-        <ChapterView key={chapter.id} chapter={chapter} staleStops={staleStops} colors={colors} />
+        <ChapterView key={chapter.id} chapter={chapter} staleStops={staleStopIds} colors={colors} />
       ))}
       <SkippedView document={document} colors={colors} />
       <UncoveredView document={document} hunks={hunks} colors={colors} />
@@ -310,6 +319,7 @@ export function createDiffPanel(client: PluginClientContext) {
     const [models, setModels] = useState<ModelOption[]>([]);
     const [modelsError, setModelsError] = useState<string | null>(null);
     const [jobId, setJobId] = useState<string | null>(null);
+    const [statusRefresh, setStatusRefresh] = useState(0);
     const [stage, setStage] = useState<WalkthroughJobState | null>(null);
     const [stages, setStages] = useState<WalkthroughJobState[]>([]);
     const [jobError, setJobError] = useState<string | null>(null);
@@ -425,7 +435,7 @@ export function createDiffPanel(client: PluginClientContext) {
         active = false;
         clearTimeout(timer);
       };
-    }, [client, workspaceId, jobId]);
+    }, [client, workspaceId, jobId, statusRefresh]);
 
     const applyCommit = useCallback(() => setCommit(draft.trim()), [draft]);
 
@@ -461,14 +471,14 @@ export function createDiffPanel(client: PluginClientContext) {
         (result) => {
           setCancelling(false);
           if (result.error) setJobError(result.error);
-          loadStatus();
+          if (result.cancelled) setStatusRefresh((previous) => previous + 1);
         },
         (cause: unknown) => {
           setCancelling(false);
           setJobError(cause instanceof Error ? cause.message : String(cause));
         },
       );
-    }, [client, workspaceId, jobId, loadStatus]);
+    }, [client, workspaceId, jobId]);
 
     const modelOptions = useMemo(
       () => [

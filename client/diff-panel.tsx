@@ -1,14 +1,18 @@
 import type { PluginClientContext, PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
-import { Icon, ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTabState } from "@getpaseo/plugin/client";
+import { Icon, ScrollView, SettingsSelect, TextInput } from "@getpaseo/plugin/client/ui";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
-import { diffRpc, generateRpc, statusRpc } from "../shared/contracts";
+import { diffRpc, generateRpc, modelsRpc, saveSettingsRpc, settingsRpc, statusRpc } from "../shared/contracts";
 import type { ChapterIcon, StopImportance, WalkthroughJobState, WalkthroughScope } from "../shared/constants";
-import type { Chapter, Diff, DiffFile, Hunk, Stop, WalkthroughDocument } from "../shared/types";
+import { DEFAULT_PANEL_STATE, LANGUAGES, LANGUAGE_NAMES } from "../shared/constants";
+import type { Chapter, Diff, DiffFile, Hunk, ModelOption, PanelState, Stop, WalkthroughDocument } from "../shared/types";
+import { panelStateSchema } from "../shared/types";
 
 const POLL_MS = 4_000;
 const STATUS_POLL_MS = 1_500;
+const MODELS_POLL_MS = 15_000;
 
 type Colors = PluginTheme["colors"];
 
@@ -245,20 +249,68 @@ function DocumentView({ document, hunks, colors }: { document: WalkthroughDocume
 }
 
 export function createDiffPanel(client: PluginClientContext) {
-  return function WalkthroughPanel({ workspaceId, theme, layout }: PluginWorkspacePanelProps) {
+  return function WalkthroughPanel({ workspaceId, theme, layout, tab }: PluginWorkspacePanelProps) {
     const colors = theme.colors;
-    const [scope, setScope] = useState<WalkthroughScope>("all");
+    // The scope, the model and the language live in the panel state: the host keeps it per
+    // workspace, and the plugin settings API is host scope on daemon 0.15.4.
+    const [panelState, setPanelState] = useTabState(tab, panelStateSchema, DEFAULT_PANEL_STATE);
+    const { scope, model, language } = panelState;
+    const storedState = useRef(tab.state);
     const [commit, setCommit] = useState("");
     const [draft, setDraft] = useState("");
     const [diff, setDiff] = useState<Diff | null>(null);
     const [base, setBase] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [models, setModels] = useState<ModelOption[]>([]);
+    const [modelsError, setModelsError] = useState<string | null>(null);
     const [jobId, setJobId] = useState<string | null>(null);
     const [stage, setStage] = useState<WalkthroughJobState | null>(null);
     const [stages, setStages] = useState<WalkthroughJobState[]>([]);
     const [jobError, setJobError] = useState<string | null>(null);
     const [document, setDocument] = useState<WalkthroughDocument | null>(null);
     const [starting, setStarting] = useState(false);
+
+    const choose = useCallback(
+      (next: Partial<PanelState>) => {
+        const merged: PanelState = { ...panelState, ...next };
+        setPanelState(merged);
+        void client.rpc(saveSettingsRpc, { workspaceId, settings: merged }).catch(() => undefined);
+      },
+      [client, workspaceId, panelState, setPanelState],
+    );
+
+    const loadModels = useCallback(() => {
+      client.rpc(modelsRpc, { workspaceId }).then(
+        (result) => {
+          setModels(result.models);
+          setModelsError(result.error);
+        },
+        (cause: unknown) => setModelsError(cause instanceof Error ? cause.message : String(cause)),
+      );
+    }, [client, workspaceId]);
+
+    useEffect(() => {
+      loadModels();
+      const timer = setInterval(loadModels, MODELS_POLL_MS);
+      return () => clearInterval(timer);
+    }, [loadModels]);
+
+    // A panel whose state the host never wrote takes the choice the server remembers for the
+    // workspace; a panel that has a state of its own keeps it.
+    useEffect(() => {
+      let cancelled = false;
+      client.rpc(settingsRpc, { workspaceId }).then(
+        (result) => {
+          if (cancelled) return;
+          if (storedState.current !== undefined) return;
+          setPanelState(result.settings);
+        },
+        () => undefined,
+      );
+      return () => {
+        cancelled = true;
+      };
+    }, [client, workspaceId, setPanelState]);
 
     const load = useCallback(() => {
       if (scope === "commit" && !commit) {
@@ -316,7 +368,13 @@ export function createDiffPanel(client: PluginClientContext) {
     const generate = useCallback(() => {
       setStarting(true);
       client
-        .rpc(generateRpc, { workspaceId, scope, ...(scope === "commit" ? { commit } : {}), model: null, language: "en" })
+        .rpc(generateRpc, {
+          workspaceId,
+          scope,
+          ...(scope === "commit" ? { commit } : {}),
+          model,
+          language,
+        })
         .then(
           (result) => {
             setJobId(result.jobId);
@@ -329,7 +387,26 @@ export function createDiffPanel(client: PluginClientContext) {
             setStarting(false);
           },
         );
-    }, [client, workspaceId, scope, commit]);
+    }, [client, workspaceId, scope, commit, model, language]);
+
+    const modelOptions = useMemo(
+      () => [
+        { label: "Default model", value: "" },
+        ...models.map((option) => ({
+          label: `${option.label} (${option.provider})`,
+          value: `${option.provider}/${option.id}`,
+        })),
+      ],
+      [models],
+    );
+
+    const languageOptions = useMemo(
+      () => LANGUAGES.map((tag) => ({ label: LANGUAGE_NAMES[tag], value: tag })),
+      [],
+    );
+
+    const modelGone =
+      model !== null && models.length > 0 && !models.some((option) => `${option.provider}/${option.id}` === model);
 
     const empty = error
       ? null
@@ -354,7 +431,7 @@ export function createDiffPanel(client: PluginClientContext) {
                 accessibilityRole="button"
                 accessibilityState={{ selected: active }}
                 accessibilityLabel={`Show the ${source.label} changes`}
-                onPress={() => setScope(source.scope)}
+                onPress={() => choose({ scope: source.scope })}
                 style={[styles.source, { borderColor: colors.border, backgroundColor: active ? colors.accent : colors.surface1 }]}
               >
                 <Text style={[styles.sourceText, { color: active ? colors.accentForeground : colors.foreground }]}>{source.label}</Text>
@@ -382,6 +459,24 @@ export function createDiffPanel(client: PluginClientContext) {
               <Text style={[styles.sourceText, { color: colors.accentForeground }]}>Show</Text>
             </Pressable>
           </View>
+        ) : null}
+        <View style={styles.pickers}>
+          <SettingsSelect
+            label="Model"
+            value={model ?? ""}
+            options={modelOptions}
+            onValueChange={(value) => choose({ model: value === "" ? null : value })}
+          />
+          <SettingsSelect
+            label="Language"
+            value={language}
+            options={languageOptions}
+            onValueChange={(value) => choose({ language: value })}
+          />
+        </View>
+        {modelsError ? <Text style={[styles.meta, { color: colors.statusDanger }]}>{modelsError}</Text> : null}
+        {modelGone ? (
+          <Text style={[styles.meta, { color: colors.statusWarning }]}>The model you chose is not available any more.</Text>
         ) : null}
         <Pressable
           accessibilityRole="button"
@@ -430,6 +525,7 @@ const styles = StyleSheet.create({
   content: { padding: 16, gap: 10 },
   contentCompact: { padding: 12 },
   sources: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  pickers: { gap: 2 },
   source: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 },
   sourceText: { fontSize: 12, fontWeight: "600" },
   commit: { flexDirection: "row", alignItems: "center", gap: 8 },

@@ -101,6 +101,8 @@ export const jobSchema = z.object({
   id: z.string(),
   workspaceId: z.string(),
   state: z.enum(JOB_STATES),
+  /** The states the job has been in, oldest first: the panel shows the trail. */
+  stages: z.array(z.enum(JOB_STATES)),
   error: z.string().nullable(),
   startedAt: z.number(),
 });

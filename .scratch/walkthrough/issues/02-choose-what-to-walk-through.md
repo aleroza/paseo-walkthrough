@@ -19,14 +19,15 @@
   existing `walkthrough.diff` contract, which already took a `scope`; the commit source adds a
   hash field and asks for it in the panel instead of guessing one.
 - The base branch is detected, in this order: the default branch of the remote
-  (`refs/remotes/<remote>/HEAD`), a conventional local branch (`main`, `master`, `develop`, `trunk`),
-  and finally the first commit of the repository, which is where a branch with no base of its own
-  starts. The branch source compares the merge base of that base against `HEAD`, so it shows the
-  commits the branch has and its base does not.
+  (`refs/remotes/<remote>/HEAD`), then a conventional local branch (`main`, `master`, `develop`,
+  `trunk`). A repository with neither has no base branch, and the branch source says so in a clear
+  empty state instead of inventing one. The branch source compares the merge base of that base
+  against `HEAD`, so it shows the commits the branch has and its base does not.
 - `walkthrough.diff` returns the base it compared against next to the diff, so the panel can say
   `compared against origin/main` instead of leaving the reviewer to guess.
 - The branch source shows the committed work of the branch. The uncommitted work stays with the
   `all`, `staged` and `unstaged` sources, so the five sources never overlap.
-- Every git call stays read-only: `rev-parse`, `symbolic-ref`, `for-each-ref`, `rev-list`,
-  `merge-base`, `diff`, `show`. The test that the working tree stays exactly as it was now runs
-  every source, not just the working tree.
+- Every git call stays read-only: `rev-parse`, `symbolic-ref`, `for-each-ref`, `merge-base`, `diff`,
+  `show`. The test that the working tree stays exactly as it was now runs every source, not just
+  the working tree, and a test proves that a `core.pager`, a `diff.external` and a textconv driver
+  the repository configures never run.

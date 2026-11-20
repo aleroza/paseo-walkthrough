@@ -30,8 +30,9 @@ export function git(cwd: string, args: string[], env: NodeJS.ProcessEnv = gitEnv
   return new Promise((done) => {
     execFile(
       "git",
-      // A repository's config can name an fsmonitor hook, which any command that reads the index would start.
-      ["-c", "core.fsmonitor=false", ...args],
+      // A repository's config can name an fsmonitor hook, which any command that reads the index would start, and the
+      // ext transport, which would run a command of the repository's config. Neither can reach a read-only invocation.
+      ["--no-pager", "-c", "core.fsmonitor=false", "-c", "protocol.ext.allow=never", ...args],
       { cwd, timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER, env },
       (error, stdout, stderr) => {
         const code = error ? (typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : -1) : 0;

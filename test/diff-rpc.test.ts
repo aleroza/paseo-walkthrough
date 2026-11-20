@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -336,7 +336,7 @@ describe("walkthrough.diff", () => {
     expect(result.diff?.files[0].hunks[0].patch).toContain("+const b = 22;");
   });
 
-  it("falls back to the first commit when the repository knows no base branch", async () => {
+  it("gives a repository without a base branch an empty branch diff", async () => {
     const repo = await createRepo("solo");
     await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
     await git(repo, ["add", "-A"]);
@@ -345,9 +345,9 @@ describe("walkthrough.diff", () => {
     const result = await callDiff(repo, { scope: "branch" });
 
     expect(result.error).toBeNull();
-    expect(result.base).toBe("the first commit");
-    expect(result.diff?.fileCount).toBe(1);
-    expect(result.diff?.files[0].hunks[0].patch).toContain("+const b = 22;");
+    expect(result.base).toBeNull();
+    expect(result.diff?.fileCount).toBe(0);
+    expect(result.diff?.hunkCount).toBe(0);
   });
 
   it("gives a repository without commits an empty branch diff", async () => {
@@ -365,12 +365,37 @@ describe("walkthrough.diff", () => {
 
   it("gives a branch that matches its base an empty diff", async () => {
     const repo = await createRepo();
+    await git(repo, ["checkout", "-qb", "feature"]);
 
     const result = await callDiff(repo, { scope: "branch" });
 
     expect(result.error).toBeNull();
+    expect(result.base).toBe("main");
     expect(result.diff?.fileCount).toBe(0);
     expect(result.diff?.hunkCount).toBe(0);
+  });
+
+  it("does not let the repository config run a command of its own", async () => {
+    const repo = await createRepo();
+    const outside = await mkdtemp(join(tmpdir(), "walkthrough-hijack-"));
+    onTestFinished(() => rm(outside, { recursive: true, force: true }));
+    const marker = join(outside, "hijacked");
+    const hijack = join(outside, "hijack.sh");
+    await writeFile(hijack, `#!/bin/sh\ntouch "${marker}"\nexit 0\n`);
+    await chmod(hijack, 0o755);
+    await git(repo, ["config", "core.pager", hijack]);
+    await git(repo, ["config", "diff.external", hijack]);
+    await git(repo, ["config", "diff.app.textconv", hijack]);
+    await writeFile(join(repo, ".gitattributes"), "app.ts diff=app\n");
+    await git(repo, ["add", "-A"]);
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+
+    const result = await callDiff(repo);
+
+    expect(result.error).toBeNull();
+    await expect(stat(marker)).rejects.toThrow();
+    const app = result.diff?.files.find((file) => file.path === "app.ts");
+    expect(app?.hunks[0].patch).toContain("+const b = 22;");
   });
 
   it("gives a repository with nothing staged an empty staged diff", async () => {

@@ -3,7 +3,7 @@ import { git } from "./git";
 export interface BranchBase {
   /** The ref the comparison starts from. */
   ref: string;
-  /** The name the reviewer sees: "origin/main", "main" or "the first commit". */
+  /** The name the reviewer sees: "origin/main" or "main". */
   label: string;
 }
 
@@ -11,8 +11,8 @@ const CONVENTIONAL_BASES = ["main", "master", "develop", "trunk"];
 
 /**
  * Finds the branch the current branch was built on, so the reviewer never has to name it.
- * The default branch of the remote comes first, then a conventional local branch, and finally the
- * first commit of the repository, which is where a branch with no base of its own starts.
+ * The default branch of the remote comes first, then a conventional local branch. A repository
+ * that has neither has no base branch, and the branch source says so instead.
  */
 export async function detectBaseBranch(directory: string): Promise<BranchBase | null> {
   const head = await git(directory, ["rev-parse", "--verify", "--quiet", "HEAD"]);
@@ -28,10 +28,7 @@ export async function detectBaseBranch(directory: string): Promise<BranchBase | 
     if (found.code === 0) return { ref: `refs/heads/${name}`, label: name };
   }
 
-  const root = await git(directory, ["rev-list", "--max-parents=0", "HEAD"]);
-  const first = root.stdout.trim().split("\n")[0]?.trim();
-  if (!first) return null;
-  return { ref: first, label: "the first commit" };
+  return null;
 }
 
 /**

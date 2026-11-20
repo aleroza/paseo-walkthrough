@@ -27,6 +27,8 @@ const EMPTY: Record<WalkthroughScope, string> = {
   commit: "That commit changed no files.",
 };
 
+const NO_BASE = "This branch has no base branch to compare against.";
+
 const PENDING: Record<WalkthroughScope, string> = {
   all: "Reading the working tree...",
   staged: "Reading the staged changes...",
@@ -130,7 +132,9 @@ export function createDiffPanel(client: PluginClientContext) {
         : !diff.repository
           ? "This workspace is not a git repository, so there is nothing to walk through."
           : diff.files.length === 0
-            ? EMPTY[scope]
+            ? scope === "branch" && !base
+              ? NO_BASE
+              : EMPTY[scope]
             : null;
 
     return (

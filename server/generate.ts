@@ -279,14 +279,17 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
       if (view?.state === "done") await job?.persistence;
       const { scope, commit } = job?.request ?? {};
       const source = result?.source ?? (scope ? { scope, ...(commit ? { commit } : {}) } : undefined);
-      const staleness = result
+      const current = result
         ? await readStaleness(paseo, { ...result.source, workspaceId }, result.document, result.builtHunks)
         : null;
-      const hunks = result ? [...result.builtHunks.values()].flatMap((file) => file.map(({ hunk }) => hunk)) : [];
+      const hunks = result ? [...result.builtHunks.values()].flatMap((file) => file.map(({ hunk }) => {
+        const match = current?.matches.get(hunk.id);
+        return match ? { ...match, id: hunk.id } : hunk;
+      })) : [];
       return {
         job: view,
         document: result?.document ?? null,
-        staleness,
+        staleness: current?.staleness ?? null,
         hunks,
         ...(source ? { source } : {}),
         ...(result?.metadata ? { documentMetadata: result.metadata } : {}),

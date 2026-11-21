@@ -22,19 +22,20 @@ afterAll(async () => {
   await Promise.all(homeRoots.map((root) => rm(root, { recursive: true, force: true })));
 });
 
+const git = (cwd: string, ...args: string[]) =>
+  new Promise<void>((done, fail) => {
+    execFile("git", args, { cwd }, (error) => (error ? fail(error) : done()));
+  });
+
 async function createRepo(names: string[], contents: Record<string, string> = {}): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "walkthrough-repo-"));
   onTestFinished(() => rm(dir, { recursive: true, force: true }));
-  const git = (args: string[]) =>
-    new Promise<void>((done, fail) => {
-      execFile("git", args, { cwd: dir }, (error) => (error ? fail(error) : done()));
-    });
-  await git(["init", "-q", "-b", "main", "."]);
-  await git(["config", "user.email", "test@example.com"]);
-  await git(["config", "user.name", "Test"]);
+  await git(dir, "init", "-q", "-b", "main", ".");
+  await git(dir, "config", "user.email", "test@example.com");
+  await git(dir, "config", "user.name", "Test");
   for (const name of names) await writeFile(join(dir, name), contents[name] ?? `export const ${name.replace(/\W/g, "_")} = 1;\n`);
-  await git(["add", "-A"]);
-  await git(["commit", "-qm", "init"]);
+  await git(dir, "add", "-A");
+  await git(dir, "commit", "-qm", "init");
   return dir;
 }
 
@@ -201,6 +202,37 @@ const oneStop = (hunks: string[], prose: string) => ({
 });
 
 describe("the walkthrough document", () => {
+  it("keeps a stop current when its patch moves after a staged insertion", async () => {
+    const original = "line 1\nline 2\nline 3\nline 4\nline 5\nold value\nline 7\nline 8\nline 9\n";
+    const modified = original.replace("old value", "new value");
+    const repo = await createRepo(["app.ts"], { "app.ts": original });
+    const file = join(repo, "app.ts");
+    await writeFile(file, modified);
+    const { handlers } = load();
+    const fake = fakePaseo(repo);
+    const [anchor] = await hunkIdsOf(handlers, fake.paseo);
+    const { jobId } = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    fake.release(answer({ chapters: [{ stops: [oneStop(["h1"], "Updates the value.")] }] }));
+    const finished = await waitForTerminal(handlers, fake.paseo, jobId);
+    expect(finished.job?.state).toBe("done");
+
+    await writeFile(file, `inserted\n${original}`);
+    await git(repo, "add", "app.ts");
+    await writeFile(file, `inserted\n${modified}`);
+    const [staged, shifted] = await hunkIdsOf(handlers, fake.paseo);
+    expect(shifted).not.toBe(anchor);
+    const edited = statusRpc.output.parse(await callStatus(handlers, fake.paseo, jobId));
+    expect(edited.staleness).toMatchObject({
+      stale: true,
+      staleStopIds: [],
+      uncoveredHunkIds: [staged],
+      missingHunkIds: [],
+      outdatedHunkIds: [],
+      currentUncoveredHunks: [{ id: staged }],
+    });
+    expect(edited.hunks).toEqual([expect.objectContaining({ id: anchor, oldStart: 4, newStart: 4 })]);
+  });
+
   it("marks edited and removed anchors outdated and returns every current uncovered patch once", async () => {
     const bContents = (first: number, last: number) =>
       `export const first = ${first};\n${"\n".repeat(12)}export const last = ${last};\n`;

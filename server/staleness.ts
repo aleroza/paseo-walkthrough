@@ -39,7 +39,18 @@ function overlaps(left: HunkSnapshot, right: HunkSnapshot): boolean {
 
 const locationOf = ({ hunk: { id, path, section, header } }: HunkSnapshot): HunkLocation => ({ id, path, section, header });
 
-function compareStaleness(document: WalkthroughDocument, before: StalenessSnapshot, after: StalenessSnapshot): Staleness {
+function uniqueHunks(hunks: HunkSnapshot[], keyOf: (hunk: Hunk) => string) {
+  const byKey = new Map<string, Hunk | null>();
+  for (const { hunk } of hunks) {
+    const key = keyOf(hunk);
+    byKey.set(key, byKey.has(key) ? null : hunk);
+  }
+  return byKey;
+}
+
+const patchBody = ({ patch }: Hunk) => patch.slice(patch.indexOf("\n") + 1);
+
+function compareStaleness(document: WalkthroughDocument, before: StalenessSnapshot, after: StalenessSnapshot) {
   const outdatedHunkIds = new Set<string>();
   const missingHunks: HunkLocation[] = [];
   const uncoveredHunks: HunkLocation[] = [];
@@ -48,32 +59,42 @@ function compareStaleness(document: WalkthroughDocument, before: StalenessSnapsh
     for (const { hunk } of entries) currentUncoveredHunks.set(hunk.id, hunk);
   }
 
-  // Older All caches have one combined patch per path. An exact match in one current section can still anchor the stop.
-  const legacyMatches = new Map<string, string>();
+  const matches = new Map<string, Hunk>();
+  const matchedCurrentIds = new Set<string>();
   const liveSectionsByLegacyKey = new Map<string, HunkSnapshot[]>();
   for (const [key, oldHunks] of before) {
-    if (!key.startsWith("all:")) continue;
-    const path = key.slice("all:".length);
-    const liveHunks = [...(after.get(`staged:${path}`) ?? []), ...(after.get(`unstaged:${path}`) ?? [])];
-    for (const { hunk: old } of oldHunks) {
-      const identical = liveHunks.filter(({ hunk }) => hunk.patch === old.patch);
-      if (identical.length === 1) legacyMatches.set(old.id, identical[0].hunk.id);
+    let candidates = after.get(key) ?? [];
+    // Older All caches have one combined patch per path.
+    const legacy = key.startsWith("all:");
+    if (legacy) {
+      const path = key.slice("all:".length);
+      candidates = [...(after.get(`staged:${path}`) ?? []), ...(after.get(`unstaged:${path}`) ?? [])];
+      liveSectionsByLegacyKey.set(key, candidates);
     }
-    liveSectionsByLegacyKey.set(key, liveHunks);
+    const keyOf = (hunk: Hunk) => legacy ? hunk.patch : hunk.id;
+    const exact = uniqueHunks(candidates, keyOf);
+    const oldBodies = uniqueHunks(oldHunks, patchBody);
+    const currentBodies = uniqueHunks(candidates, patchBody);
+    const oldExact = legacy ? uniqueHunks(oldHunks, keyOf) : null;
+    for (const { hunk: old } of oldHunks) {
+      const body = patchBody(old);
+      const sameLocation = !oldExact || oldExact.get(keyOf(old)) ? exact.get(keyOf(old)) : null;
+      const match = sameLocation ?? (oldBodies.get(body) ? currentBodies.get(body) : null);
+      if (!match || matchedCurrentIds.has(match.id)) continue;
+      matches.set(old.id, match);
+      matchedCurrentIds.add(match.id);
+    }
   }
-  const matchedCurrentIds = new Set(legacyMatches.values());
 
   for (const key of new Set([...before.keys(), ...after.keys()])) {
     const oldHunks = before.get(key) ?? [];
     const newHunks = after.get(key) ?? [];
-    const oldIds = new Set(oldHunks.map(({ hunk }) => hunk.id));
-    const newIds = new Set(newHunks.map(({ hunk }) => hunk.id));
-    const gained = newHunks.filter(({ hunk }) => !oldIds.has(hunk.id) && !matchedCurrentIds.has(hunk.id));
+    const gained = newHunks.filter(({ hunk }) => !matchedCurrentIds.has(hunk.id));
     uncoveredHunks.push(...gained.map(locationOf));
 
     const replacements = liveSectionsByLegacyKey.get(key) ?? gained;
     for (const hunk of oldHunks) {
-      if (newIds.has(hunk.hunk.id) || legacyMatches.has(hunk.hunk.id)) continue;
+      if (matches.has(hunk.hunk.id)) continue;
       outdatedHunkIds.add(hunk.hunk.id);
       if (!replacements.some((replacement) => overlaps(hunk, replacement))) {
         missingHunks.push(locationOf(hunk));
@@ -86,10 +107,10 @@ function compareStaleness(document: WalkthroughDocument, before: StalenessSnapsh
     .filter((stop) => stop.hunkIds.some((id) => outdatedHunkIds.has(id)))
     .map((stop) => stop.id);
   for (const stop of stops) {
-    for (const id of stop.hunkIds) currentUncoveredHunks.delete(legacyMatches.get(id) ?? id);
+    for (const id of stop.hunkIds) currentUncoveredHunks.delete(matches.get(id)?.id ?? id);
   }
 
-  return {
+  const staleness: Staleness = {
     stale: outdatedHunkIds.size > 0 || uncoveredHunks.length > 0,
     staleStopIds,
     uncoveredHunkIds: uncoveredHunks.map((hunk) => hunk.id),
@@ -99,6 +120,7 @@ function compareStaleness(document: WalkthroughDocument, before: StalenessSnapsh
     outdatedHunkIds: [...outdatedHunkIds],
     currentUncoveredHunks: [...currentUncoveredHunks.values()],
   };
+  return { staleness, matches };
 }
 
 export async function readStaleness(
@@ -106,7 +128,7 @@ export async function readStaleness(
   source: SourceRequest,
   document: WalkthroughDocument,
   builtHunks: StalenessSnapshot,
-): Promise<Staleness | null> {
+) {
   try {
     const directory = await resolveWorkspaceDirectory(paseo, source.workspaceId);
     const { diff } = await collectDiff(directory, source.scope, source.commit);

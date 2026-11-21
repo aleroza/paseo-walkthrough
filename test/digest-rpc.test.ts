@@ -19,22 +19,23 @@ afterAll(async () => {
   await rm(homeRoot, { recursive: true, force: true });
 });
 
+const git = (dir: string, args: string[]) =>
+  new Promise<void>((done, fail) => {
+    execFile("git", args, { cwd: dir }, (error) => (error ? fail(error) : done()));
+  });
+
 async function createRepo(files: Record<string, string | Buffer>): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "walkthrough-repo-"));
   onTestFinished(() => rm(dir, { recursive: true, force: true }));
-  const git = (args: string[]) =>
-    new Promise<void>((done, fail) => {
-      execFile("git", args, { cwd: dir }, (error) => (error ? fail(error) : done()));
-    });
-  await git(["init", "-q", "-b", "main", "."]);
-  await git(["config", "user.email", "test@example.com"]);
-  await git(["config", "user.name", "Test"]);
+  await git(dir, ["init", "-q", "-b", "main", "."]);
+  await git(dir, ["config", "user.email", "test@example.com"]);
+  await git(dir, ["config", "user.name", "Test"]);
   for (const [name, content] of Object.entries(files)) {
     await mkdir(join(dir, name, ".."), { recursive: true });
     await writeFile(join(dir, name), content);
   }
-  await git(["add", "-A"]);
-  await git(["commit", "-qm", "init"]);
+  await git(dir, ["add", "-A"]);
+  await git(dir, ["commit", "-qm", "init"]);
   return dir;
 }
 
@@ -230,6 +231,46 @@ const answer = (aliases: string[]) =>
   });
 
 describe("the digest the model reads", () => {
+  it("lets a walkthrough anchor both sides of a reversed staged edit", async () => {
+    const repo = await createRepo({ "app.ts": "const a = 1;\n" });
+    await writeFile(join(repo, "app.ts"), "const a = 2;\n");
+    await git(repo, ["add", "app.ts"]);
+    await writeFile(join(repo, "app.ts"), "const a = 1;\n");
+
+    const { handlers, cleanup } = load();
+    onTestFinished(cleanup);
+    const fake = fakePaseo(repo);
+    const request = { workspaceId: "ws-1", scope: "all" };
+    const context = { paseo: fake.paseo };
+    const diff = diffRpc.output.parse(await handlerFor(handlers, diffRpc.name)(request, context));
+    const [staged, unstaged] = diff.diff!.files.map(({ hunks }) => hunks[0]);
+    const { jobId } = generateRpc.output.parse(await handlerFor(handlers, generateRpc.name)(request, context));
+    const digest = digestOf(await waitForPrompt(fake));
+    expect(digest.files.map(({ path, scope }) => [path, scope])).toEqual([["app.ts", "staged"], ["app.ts", "unstaged"]]);
+
+    fake.release(answer(["h2", "h1"]));
+    const finished = await waitForTerminal(handlers, fake.paseo, jobId);
+    expect(finished.job?.state).toBe("done");
+    expect(finished.document?.chapters[0]?.stops[0]?.hunkIds).toEqual([unstaged.id, staged.id]);
+
+    const readStatus = async () => statusRpc.output.parse(
+      await handlerFor(handlers, statusRpc.name)({ workspaceId: "ws-1", jobId }, context),
+    );
+    const current = await readStatus();
+    expect(current.hunks).toEqual([staged, unstaged]);
+    expect(current.staleness?.stale).toBe(false);
+
+    await writeFile(join(repo, "app.ts"), "const a = 2;\n");
+    const after = await readStatus();
+    expect(after.hunks).toEqual([staged, unstaged]);
+    expect(after.staleness).toMatchObject({
+      stale: true,
+      staleStopIds: [],
+      missingHunkIds: [unstaged.id],
+      uncoveredHunkIds: [],
+    });
+  });
+
   it("aliases the hunks h1 to hn in a stable order, with the file path and the body of each hunk", async () => {
     const repo = await createRepo({
       "app.ts": "const a = 1;\nconst b = 2;\n",

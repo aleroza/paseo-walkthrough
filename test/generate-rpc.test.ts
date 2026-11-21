@@ -1,4 +1,5 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -269,6 +270,42 @@ const modelAnswer = (aliases: string[], title = "The change") =>
   });
 
 describe("walkthrough cache", () => {
+  it("restores a cached All stop with a hunk saved before sections were recorded", async () => {
+    const repo = await createRepo();
+    const workspaceId = "ws-legacy";
+    const name = createHash("sha256").update(JSON.stringify(workspaceId)).digest("hex");
+    const directory = join(homeRoot, "home", "plugin-data", "walkthrough", "cache", "workspaces");
+    const hunk = {
+      id: "all:app.ts:1a2b3c4d", path: "app.ts", header: "@@ -1 +1 @@",
+      oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, added: 1, deleted: 1,
+      patch: "@@ -1 +1 @@\n-const a = 1;\n+const a = 2;\n",
+    };
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, `${name}.json`), JSON.stringify({
+      key: "legacy",
+      source: { scope: "all" },
+      diff: {
+        files: [{ path: hunk.path, oldPath: null, status: "modified", binary: false, hunks: [hunk] }],
+        hunkCount: 1, fileCount: 1, generatedPaths: [], repository: true,
+      },
+      document: {
+        title: "Cached walkthrough", focus: "The value changed.", routine: [], uncoveredHunkIds: [], droppedAnchors: 0,
+        chapters: [{ id: "chapter", title: "Change", icon: "doc", blurb: "", stops: [{
+          id: "stop", title: "New value", hunkIds: [hunk.id], importance: "normal", prose: "The constant changed.", observations: [],
+        }] }],
+      },
+    }));
+
+    const { handlers, cleanup } = load();
+    onTestFinished(cleanup);
+    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
+    const restored = statusRpc.output.parse(
+      await handlerFor(handlers, statusRpc.name)({ workspaceId, jobId: null }, { paseo: fake.paseo }),
+    );
+    expect(restored.document?.chapters[0].stops[0].hunkIds).toEqual([hunk.id]);
+    expect(restored.hunks).toEqual([hunk]);
+  });
+
   it("restores the workspace's document on reload and fulfills the same request without asking the model again", async () => {
     const repo = await createRepo();
     const path = join(repo, "app.ts");
@@ -353,7 +390,7 @@ describe("walkthrough.generate", () => {
     fake.release(modelAnswer(["h1"]));
     const finished = await waitForTerminal(handlers, fake.paseo, generated.jobId);
     expect(finished.job?.state).toBe("done");
-    expect(finished.document?.chapters[0]?.stops[0]?.hunkIds).toEqual([expect.stringMatching(/^all:app\.ts:[0-9a-f]{8}$/)]);
+    expect(finished.document?.chapters[0]?.stops[0]?.hunkIds).toEqual([expect.stringMatching(/^unstaged:app\.ts:[0-9a-f]{8}$/)]);
   });
 
   it("retries rejected OpenCode structured output with feedback and the same schema", async () => {
@@ -417,7 +454,7 @@ describe("walkthrough.generate", () => {
     fake.release(modelAnswer(["h1"]));
     const finished = await waitForTerminal(handlers, fake.paseo, generated.jobId);
 
-    expect(hunkId).toMatch(/^all:app\.ts:[0-9a-f]{8}$/);
+    expect(hunkId).toMatch(/^unstaged:app\.ts:[0-9a-f]{8}$/);
     expect(finished.document?.chapters[0]?.stops[0]?.hunkIds).toEqual([hunkId]);
   });
 

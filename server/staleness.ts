@@ -4,7 +4,7 @@ import { isGeneratedArtifact } from "./generated";
 import type { PaseoApi } from "./host-types";
 import { resolveWorkspaceDirectory } from "./workspace";
 
-type HunkLocation = Pick<Hunk, "id" | "path" | "header">;
+type HunkLocation = Pick<Hunk, "id" | "path" | "section" | "header">;
 type HunkSnapshot = { hunk: Hunk; oldChangeStart: number; oldChangeEnd: number };
 type StalenessSnapshot = Map<string, HunkSnapshot[]>;
 
@@ -24,7 +24,11 @@ function snapshotHunk(hunk: Hunk): HunkSnapshot {
 }
 
 export function snapshotHunks(files: DiffFile[]): StalenessSnapshot {
-  return new Map(files.filter((file) => !isGeneratedArtifact(file.path)).map((file) => [file.path, file.hunks.map(snapshotHunk)]));
+  return new Map(files.filter((file) => !isGeneratedArtifact(file.path)).map((file) => {
+    // Older cached Staged and Unstaged snapshots only recorded the section in the hunk ID.
+    const section = file.section ?? file.hunks[0]?.id.split(":", 1)[0] ?? "";
+    return [`${section}:${file.path}`, file.hunks.map(snapshotHunk)];
+  }));
 }
 
 function overlaps(left: HunkSnapshot, right: HunkSnapshot): boolean {
@@ -33,16 +37,16 @@ function overlaps(left: HunkSnapshot, right: HunkSnapshot): boolean {
   return start < end || (start === end && (left.oldChangeStart === left.oldChangeEnd || right.oldChangeStart === right.oldChangeEnd));
 }
 
-const locationOf = ({ hunk: { id, path, header } }: HunkSnapshot): HunkLocation => ({ id, path, header });
+const locationOf = ({ hunk: { id, path, section, header } }: HunkSnapshot): HunkLocation => ({ id, path, section, header });
 
 function compareStaleness(document: WalkthroughDocument, before: StalenessSnapshot, after: StalenessSnapshot): Staleness {
   const edited = new Set<string>();
   const missingHunks: HunkLocation[] = [];
   const uncoveredHunks: HunkLocation[] = [];
 
-  for (const path of new Set([...before.keys(), ...after.keys()])) {
-    const oldHunks = before.get(path) ?? [];
-    const newHunks = after.get(path) ?? [];
+  for (const key of new Set([...before.keys(), ...after.keys()])) {
+    const oldHunks = before.get(key) ?? [];
+    const newHunks = after.get(key) ?? [];
     const oldIds = new Set(oldHunks.map(({ hunk }) => hunk.id));
     const newIds = new Set(newHunks.map(({ hunk }) => hunk.id));
     const gained = newHunks.filter(({ hunk }) => !oldIds.has(hunk.id));

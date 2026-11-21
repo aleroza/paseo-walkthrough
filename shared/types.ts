@@ -8,9 +8,13 @@ import {
   WALKTHROUGH_SCOPE,
 } from "./constants";
 
+const diffSectionSchema = z.enum(["staged", "unstaged"]);
+export type DiffSection = z.infer<typeof diffSectionSchema>;
+
 export const hunkSchema = z.object({
   id: z.string(),
   path: z.string(),
+  section: diffSectionSchema.optional(),
   header: z.string(),
   oldStart: z.number().int(),
   oldLines: z.number().int(),
@@ -24,6 +28,7 @@ export type Hunk = z.infer<typeof hunkSchema>;
 
 export const diffFileSchema = z.object({
   path: z.string(),
+  section: diffSectionSchema.optional(),
   oldPath: z.string().nullable(),
   status: z.enum(["added", "deleted", "renamed", "modified"]),
   binary: z.boolean(),
@@ -85,7 +90,7 @@ export const documentSchema = z.object({
 });
 export type WalkthroughDocument = z.infer<typeof documentSchema>;
 
-const hunkLocationSchema = hunkSchema.pick({ id: true, path: true, header: true });
+const hunkLocationSchema = hunkSchema.pick({ id: true, path: true, section: true, header: true });
 
 export const stalenessSchema = z.object({
   stale: z.boolean(),

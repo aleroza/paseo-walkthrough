@@ -112,7 +112,7 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
       if (signal.aborted) return;
 
       const digest = buildDigest(diff.files, request.scope);
-      if (digest.hunkCount === 0) throw new Error(emptyChangeMessage(diff.files.length, digest.generatedPaths.length));
+      if (digest.hunkCount === 0) throw new Error(emptyChangeMessage(diff.fileCount, digest.generatedPaths.length));
       const provider = await resolveModel(paseo, request.model ?? null);
       if (signal.aborted) return;
       const language = normalizeLanguage(request.language ?? DEFAULT_LANGUAGE);

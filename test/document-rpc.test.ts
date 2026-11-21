@@ -222,9 +222,9 @@ describe("the walkthrough document", () => {
     await writeFile(join(repo, "b.ts"), bContents(1, 2));
     await writeFile(join(repo, "c.ts"), "export const c_ts = 1;\n");
     const [changed, addedToExistingFile, added] = await hunkIdsOf(handlers, fake.paseo);
-    expect(changed).toMatch(/^all:a\.ts:/);
-    expect(addedToExistingFile).toMatch(/^all:b\.ts:/);
-    expect(added).toMatch(/^all:c\.ts:/);
+    expect(changed).toMatch(/^unstaged:a\.ts:/);
+    expect(addedToExistingFile).toMatch(/^unstaged:b\.ts:/);
+    expect(added).toMatch(/^unstaged:c\.ts:/);
 
     const edited = await callStatus(handlers, fake.paseo, jobId);
     expect(edited.staleness).toMatchObject({

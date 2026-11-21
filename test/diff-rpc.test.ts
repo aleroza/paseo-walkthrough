@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import * as childProcess from "node:child_process";
 import { chmod, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,18 @@ import { commitsRpc, diffRpc } from "../shared/contracts";
 import { PANEL_ID, PLUGIN_ID } from "../shared/constants";
 
 import type { PaseoApi } from "../server/host-types";
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const original = await importOriginal<typeof childProcess>();
+  return { ...original, execFile: vi.fn(original.execFile) };
+});
+
+type GitProcess = (
+  file: string,
+  args: readonly string[],
+  options: childProcess.ExecFileOptions,
+  callback: (error: childProcess.ExecFileException | null, stdout: string, stderr: string) => void,
+) => childProcess.ChildProcess;
 
 let homeRoot = "";
 
@@ -24,7 +36,7 @@ afterAll(async () => {
 
 function git(cwd: string, args: string[]): Promise<string> {
   return new Promise((done, fail) => {
-    execFile("git", args, { cwd, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" } }, (error, stdout) => {
+    childProcess.execFile("git", args, { cwd, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" } }, (error, stdout) => {
       if (error) fail(new Error(`git ${args.join(" ")} failed: ${error.message}`));
       else done(stdout);
     });
@@ -154,6 +166,39 @@ describe("walkthrough.commits", () => {
 });
 
 describe("walkthrough.diff", () => {
+  it("returns a staged patch once when it moves from the working tree into the index mid-read", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const a = 11;\nconst b = 2;\nconst c = 3;\n");
+    const { execFile } = await vi.importActual<typeof childProcess>("node:child_process");
+    let staged = false;
+    const processSpy = vi.mocked(childProcess.execFile as GitProcess);
+    onTestFinished(() => { processSpy.mockReset(); });
+    processSpy.mockImplementation((file, args, options, callback) =>
+      (execFile as GitProcess)(file, args, options, (error, stdout, stderr) => {
+        if (options.cwd !== repo || !args.includes("--cached") || staged) {
+          callback(error, stdout, stderr);
+          return;
+        }
+        staged = true;
+        void git(repo, ["add", "app.ts"]).then(
+          () => callback(error, stdout, stderr),
+          (error) => callback(error, stdout, stderr),
+        );
+      }));
+
+    const result = await callDiff(repo);
+
+    expect(staged).toBe(true);
+    expect(result.error).toBeNull();
+    expect(result.diff?.files).toEqual([
+      expect.objectContaining({
+        path: "app.ts",
+        section: "staged",
+        hunks: [expect.objectContaining({ patch: expect.stringContaining("+const a = 11;") })],
+      }),
+    ]);
+  });
+
   it("shows both sides of a staged edit reversed in the working tree", async () => {
     const repo = await createRepo();
     await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");

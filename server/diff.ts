@@ -81,6 +81,33 @@ async function collectSections(directory: string, scope: WalkthroughScope, commi
 
   if (scope === "branch") return branchSections(directory);
 
+  const sections = scope === "all" ? await allSections(directory) : await workingTreeSections(directory, scope);
+  return { sections, base: null };
+}
+
+async function indexVersion(index: string): Promise<string | null> {
+  try {
+    const { dev, ino, size, mtimeNs, ctimeNs } = await stat(index, { bigint: true });
+    return `${dev}:${ino}:${size}:${mtimeNs}:${ctimeNs}`;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function allSections(directory: string): Promise<Section[]> {
+  const path = await git(directory, ["rev-parse", "--path-format=absolute", "--git-path", "index"]);
+  const index = gitOutput(path, "rev-parse").replace(/\r?\n$/, "");
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    // Git replaces the index atomically. Both halves and untracked discovery must see the same version.
+    const before = await indexVersion(index);
+    const sections = await workingTreeSections(directory, "all");
+    if (before === await indexVersion(index)) return sections;
+  }
+  throw new Error("The Git index kept changing while reading the diff. Try again once staging has finished.");
+}
+
+async function workingTreeSections(directory: string, scope: "all" | "staged" | "unstaged"): Promise<Section[]> {
   const sections: Section[] = [];
   if (scope !== "unstaged") {
     const staged = await git(directory, ["diff", "--relative", "--cached", ...PATCH_OPTIONS]);
@@ -92,7 +119,7 @@ async function collectSections(directory: string, scope: WalkthroughScope, commi
     sections.push({ scope: "unstaged", patch: gitOutput(unstaged, "diff") }, ...(await untrackedSections(directory)));
   }
 
-  return { sections, base: null };
+  return sections;
 }
 
 /** The commits of the current branch that its base branch does not have. */

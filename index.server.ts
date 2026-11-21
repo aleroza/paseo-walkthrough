@@ -1,5 +1,5 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { collectDiff } from "./server/diff";
+import { collectDiff, listRecentCommits } from "./server/diff";
 import { createWalkthroughService } from "./server/generate";
 import { listAvailableModels } from "./server/models";
 import { readWorkspaceSettings, writeWorkspaceSettings } from "./server/settings";
@@ -7,6 +7,7 @@ import { dataDirectory, prepareDataDirectory } from "./server/store";
 import { resolveWorkspaceDirectory } from "./server/workspace";
 import {
   cancelRpc,
+  commitsRpc,
   diffRpc,
   generateRpc,
   modelsRpc,
@@ -47,6 +48,15 @@ export default function contribute(server: PluginServerContext) {
       return { models: models.map(({ provider, id, label }) => ({ provider, id, label })), error: null };
     } catch (error) {
       return { models: [], error: message(error) };
+    }
+  });
+
+  server.handle(commitsRpc, async ({ workspaceId }, { paseo }) => {
+    try {
+      const directory = await resolveWorkspaceDirectory(paseo, workspaceId);
+      return { commits: await listRecentCommits(directory), error: null };
+    } catch (error) {
+      return { commits: [], error: message(error) };
     }
   });
 

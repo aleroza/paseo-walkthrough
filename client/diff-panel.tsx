@@ -4,10 +4,10 @@ import { Icon, ScrollView, SettingsSelect, TextInput } from "@getpaseo/plugin/cl
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
-import { cancelRpc, diffRpc, generateRpc, modelsRpc, saveSettingsRpc, settingsRpc, statusRpc } from "../shared/contracts";
+import { cancelRpc, commitsRpc, diffRpc, generateRpc, modelsRpc, saveSettingsRpc, settingsRpc, statusRpc } from "../shared/contracts";
 import type { ChapterIcon, StopImportance, WalkthroughJobState, WalkthroughScope } from "../shared/constants";
 import { DEFAULT_PANEL_STATE, LANGUAGES, LANGUAGE_NAMES } from "../shared/constants";
-import type { Chapter, Diff, DiffFile, Hunk, ModelOption, PanelState, Staleness, Stop, WalkthroughDocument } from "../shared/types";
+import type { Chapter, CommitOption, Diff, DiffFile, Hunk, ModelOption, PanelState, Staleness, Stop, WalkthroughDocument } from "../shared/types";
 import { panelStateSchema } from "../shared/types";
 
 const POLL_MS = 4_000;
@@ -39,7 +39,7 @@ const PENDING: Record<WalkthroughScope, string> = {
   staged: "Reading the staged changes...",
   unstaged: "Reading the unstaged changes...",
   branch: "Reading the branch...",
-  commit: "Enter the hash of the commit to walk through.",
+  commit: "Reading the commit...",
 };
 
 const STAGE_LABELS: Record<WalkthroughJobState, string> = {
@@ -314,6 +314,7 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
     const [restoredCommit, setRestoredCommit] = useState<string>();
     const commit = panelState.commit ?? restoredCommit;
     const [draft, setDraft] = useState(commit ?? "");
+    const [history, setHistory] = useState<{ commits: CommitOption[]; error: string | null } | null>(null);
     const [diff, setDiff] = useState<Diff | null>(null);
     const [base, setBase] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -383,6 +384,23 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
         cancelled = true;
       };
     }, [client, workspaceId, setPanelState]);
+
+    useEffect(() => {
+      if (scope !== "commit") return;
+      let active = true;
+      setHistory(null);
+      client.rpc(commitsRpc, { workspaceId }).then(
+        (result) => {
+          if (active) setHistory(result);
+        },
+        (cause: unknown) => {
+          if (active) setHistory({ commits: [], error: cause instanceof Error ? cause.message : String(cause) });
+        },
+      );
+      return () => {
+        active = false;
+      };
+    }, [client, workspaceId, scope]);
 
     useEffect(() => {
       let active = true;
@@ -464,7 +482,27 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
       };
     }, [client, workspaceId, jobId, statusRefresh]);
 
-    const applyCommit = useCallback(() => choose({ commit: draft.trim() }), [choose, draft]);
+    const selectCommit = (hash: string) => {
+      setDraft(hash);
+      choose({ commit: hash });
+    };
+
+    const commitOptions = (history?.commits ?? []).map(({ hash, subject }) => ({
+      value: hash,
+      label: subject ? `${hash.slice(0, 8)} · ${subject}` : hash.slice(0, 8),
+    }));
+    if (commit && !commitOptions.some(({ value }) => value === commit)) {
+      commitOptions.unshift({ value: commit, label: commit.slice(0, 8) });
+    }
+    if (!commit) {
+      const label = !history ? "Loading commits..." : commitOptions.length ? "Select a commit" : "No commits available";
+      commitOptions.unshift({ value: "", label });
+    }
+
+    const applyCommit = () => {
+      const hash = draft.trim().toLowerCase();
+      if (hash) selectCommit(hash);
+    };
 
     const generate = useCallback(() => {
       setStarting(true);
@@ -525,8 +563,10 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
 
     const modelGone =
       model !== null && models.length > 0 && !models.some((option) => `${option.provider}/${option.id}` === model);
+    const needsCommit = scope === "commit" && !commit;
+    const generateDisabled = starting || running || needsCommit;
 
-    const empty = error
+    const empty = error || needsCommit
       ? null
       : !diff
         ? PENDING[scope]
@@ -557,13 +597,23 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
             );
           })}
         </View>
-        {scope === "commit" ? (
+        {scope === "commit" ? <>
+          <SettingsSelect
+            label="Commit"
+            value={commit ?? ""}
+            options={commitOptions}
+            disabled={!history?.commits.length}
+            error={history?.error}
+            onValueChange={(hash) => {
+              if (hash) selectCommit(hash);
+            }}
+          />
           <View style={styles.commit}>
             <TextInput
               value={draft}
               onChangeText={setDraft}
               onSubmitEditing={applyCommit}
-              placeholder="Commit hash"
+              placeholder="Or enter a full commit hash"
               autoCapitalize="none"
               autoCorrect={false}
               style={[styles.commitInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.surface1 }]}
@@ -577,7 +627,7 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
               <Text style={[styles.sourceText, { color: colors.accentForeground }]}>Show</Text>
             </Pressable>
           </View>
-        ) : null}
+        </> : null}
         <View style={styles.pickers}>
           <SettingsSelect
             label="Model"
@@ -599,8 +649,8 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Generate the walkthrough"
-          accessibilityState={{ disabled: starting || running }}
-          disabled={starting || running}
+          accessibilityState={{ disabled: generateDisabled }}
+          disabled={generateDisabled}
           onPress={generate}
           style={[styles.generate, { borderColor: colors.border, backgroundColor: running ? colors.surface2 : colors.accent }]}
         >

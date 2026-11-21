@@ -10,6 +10,7 @@ export default function contribute(client: PluginClientContext) {
     id: PANEL_ID,
     title: "Walkthrough",
     icon: "GitCompare",
+    locations: ["explorer"],
     Component: createDiffPanel(client, commandJobListeners),
   });
   const removeCommand = client.addCommandCenterItem({
@@ -23,7 +24,7 @@ export default function contribute(client: PluginClientContext) {
 
       const { jobId } = await rpc(generateRpc, { workspaceId: workspace.id });
       for (const selectJob of commandJobListeners) selectJob(workspace.id, jobId);
-      openPanel(PANEL_ID);
+      openPanel(PANEL_ID, { location: "explorer" });
     },
   });
 

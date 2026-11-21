@@ -133,6 +133,12 @@ export const modelOptionSchema = z.object({
 });
 export type ModelOption = z.infer<typeof modelOptionSchema>;
 
+export const commitOptionSchema = z.object({
+  hash: z.string(),
+  subject: z.string(),
+});
+export type CommitOption = z.infer<typeof commitOptionSchema>;
+
 export const workspaceSettingsSchema = z.object({
   scope: z.enum(WALKTHROUGH_SCOPE).default("all"),
   commit: z.string().optional(),

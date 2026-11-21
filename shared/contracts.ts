@@ -1,6 +1,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import {
+  commitOptionSchema,
   diffSchema,
   jobStatusSchema,
   modelOptionSchema,
@@ -16,6 +17,15 @@ export const diffRpc = defineRpc({
     error: z.string().nullable(),
     /** The base the branch source compared against, when it detected one. */
     base: z.string().nullable().default(null),
+  }),
+});
+
+export const commitsRpc = defineRpc({
+  name: "walkthrough.commits",
+  input: z.object({ workspaceId: z.string() }),
+  output: z.object({
+    commits: z.array(commitOptionSchema),
+    error: z.string().nullable(),
   }),
 });
 

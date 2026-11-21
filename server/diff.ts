@@ -1,6 +1,6 @@
 import { stat } from "node:fs/promises";
 import type { WalkthroughScope } from "../shared/constants";
-import type { Diff, DiffFile } from "../shared/types";
+import type { CommitOption, Diff, DiffFile } from "../shared/types";
 import { detectBaseBranch } from "./branch";
 import { git, gitOutput } from "./git";
 import { isGeneratedArtifact } from "./generated";
@@ -24,6 +24,20 @@ const emptyDiff = (repository: boolean): Diff => ({ files: [], hunkCount: 0, fil
 // would otherwise write a file wherever the argument points.
 const COMMIT_HASH = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const PATCH_OPTIONS = ["--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"];
+
+export async function listRecentCommits(directory: string): Promise<CommitOption[]> {
+  const head = await git(directory, ["rev-parse", "--verify", "--quiet", "HEAD"]);
+  if (head.code === 1) return [];
+  gitOutput(head, "rev-parse");
+
+  const result = await git(directory, ["log", "-50", "-z", "--no-show-signature", "--format=%H%x00%s", "HEAD", "--"]);
+  const fields = gitOutput(result, "log").split("\0");
+  const commits: CommitOption[] = [];
+  for (let i = 0; i + 1 < fields.length - 1; i += 2) {
+    commits.push({ hash: fields[i], subject: fields[i + 1] });
+  }
+  return commits;
+}
 
 /** Collects the working tree of a workspace with git. Nothing is written to the project. */
 export async function collectDiff(directory: string, scope: WalkthroughScope, commit?: string): Promise<SourceDiff> {

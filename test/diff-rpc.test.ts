@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import contribute from "../index.server";
-import { diffRpc } from "../shared/contracts";
+import { commitsRpc, diffRpc } from "../shared/contracts";
 import { PANEL_ID, PLUGIN_ID } from "../shared/constants";
 
 import type { PaseoApi } from "../server/host-types";
@@ -120,6 +120,42 @@ async function listTree(dir: string, prefix = ""): Promise<string[]> {
   }
   return names.sort();
 }
+
+describe("walkthrough.commits", () => {
+  async function callCommits(directory: string) {
+    const { handlers, cleanup } = load();
+    onTestFinished(cleanup);
+    const handler = handlers.get(commitsRpc.name);
+    if (!handler) throw new Error(`no handler registered for ${commitsRpc.name}`);
+    return commitsRpc.output.parse(await handler({ workspaceId: "ws-1" }, { paseo: fakePaseo(directory) }));
+  }
+
+  it("lists recent commits on the current history with full hashes that select the exact diff", async () => {
+    const repo = await createRepo();
+    const initial = (await git(repo, ["rev-parse", "HEAD"])).trim();
+    await git(repo, ["checkout", "-qb", "other"]);
+    await git(repo, ["commit", "--allow-empty", "-qm", "Other branch"]);
+    await git(repo, ["checkout", "-q", "main"]);
+    await writeFile(join(repo, "app.ts"), "const a = 100;\n");
+    await git(repo, ["commit", "-qam", "Update app"]);
+    const head = (await git(repo, ["rev-parse", "HEAD"])).trim();
+
+    const result = await callCommits(repo);
+    expect(result).toEqual({
+      commits: [{ hash: head, subject: "Update app" }, { hash: initial, subject: "init" }],
+      error: null,
+    });
+    const selected = await callDiff(repo, { scope: "commit", commit: result.commits[0].hash });
+    expect(selected.diff?.files[0].hunks[0].patch).toContain("+const a = 100;");
+  });
+
+  it("returns an empty list for a repository with no commits", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "walkthrough-repo-"));
+    onTestFinished(() => rm(repo, { recursive: true, force: true }));
+    await git(repo, ["init", "-q", "-b", "main", "."]);
+    expect(await callCommits(repo)).toEqual({ commits: [], error: null });
+  });
+});
 
 describe("walkthrough.diff", () => {
   it("collects the changed files and their hunks from a git repository", async () => {

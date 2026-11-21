@@ -99,6 +99,8 @@ export const stalenessSchema = z.object({
   missingHunkIds: z.array(z.string()),
   uncoveredHunks: z.array(hunkLocationSchema).default([]),
   missingHunks: z.array(hunkLocationSchema).default([]),
+  outdatedHunkIds: z.array(z.string()).optional(),
+  currentUncoveredHunks: z.array(hunkSchema).optional(),
 });
 export type Staleness = z.infer<typeof stalenessSchema>;
 

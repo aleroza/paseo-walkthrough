@@ -147,12 +147,13 @@ function HunkView({ hunk, colors }: { hunk: Hunk; colors: Colors }) {
   );
 }
 
-function DocumentHunkView({ hunk, colors }: { hunk: Hunk; colors: Colors }) {
+function DocumentHunkView({ hunk, previous = false, colors }: { hunk: Hunk; previous?: boolean; colors: Colors }) {
   const section = sectionLabel(hunk.section);
   return (
     <View style={[styles.documentHunk, { backgroundColor: colors.surface1, borderColor: colors.border }]}>
       <Text style={[styles.hunkPath, { backgroundColor: colors.surface2, color: colors.foreground }]}>
         {section ? `${hunk.path} (${section})` : hunk.path}
+        {previous ? " · Previous version" : null}
       </Text>
       <View style={styles.anchoredPatch}>
         <HunkView hunk={hunk} colors={colors} />
@@ -186,7 +187,13 @@ function FileView({ file, generated, colors }: { file: DiffFile; generated: bool
   );
 }
 
-function StopView({ stop, stale, hunks, colors }: { stop: Stop; stale: boolean; hunks: Map<string, Hunk>; colors: Colors }) {
+function StopView({ stop, stale, outdatedHunks, hunks, colors }: {
+  stop: Stop;
+  stale: boolean;
+  outdatedHunks: Set<string>;
+  hunks: Map<string, Hunk>;
+  colors: Colors;
+}) {
   return (
     <View style={[styles.stop, { borderColor: colors.border }]}>
       <View style={styles.stopHeader}>
@@ -211,13 +218,19 @@ function StopView({ stop, stale, hunks, colors }: { stop: Stop; stale: boolean; 
       ))}
       {stop.hunkIds.map((id) => {
         const hunk = hunks.get(id);
-        return hunk ? <DocumentHunkView key={id} hunk={hunk} colors={colors} /> : null;
+        return hunk ? <DocumentHunkView key={id} hunk={hunk} previous={outdatedHunks.has(id)} colors={colors} /> : null;
       })}
     </View>
   );
 }
 
-function ChapterView({ chapter, staleStops, hunks, colors }: { chapter: Chapter; staleStops: Set<string>; hunks: Map<string, Hunk>; colors: Colors }) {
+function ChapterView({ chapter, staleStops, outdatedHunks, hunks, colors }: {
+  chapter: Chapter;
+  staleStops: Set<string>;
+  outdatedHunks: Set<string>;
+  hunks: Map<string, Hunk>;
+  colors: Colors;
+}) {
   return (
     <View style={styles.chapter}>
       <View style={styles.chapterHeader}>
@@ -226,7 +239,7 @@ function ChapterView({ chapter, staleStops, hunks, colors }: { chapter: Chapter;
       </View>
       {chapter.blurb ? <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{chapter.blurb}</Text> : null}
       {chapter.stops.map((stop) => (
-        <StopView key={stop.id} stop={stop} stale={staleStops.has(stop.id)} hunks={hunks} colors={colors} />
+        <StopView key={stop.id} stop={stop} stale={staleStops.has(stop.id)} outdatedHunks={outdatedHunks} hunks={hunks} colors={colors} />
       ))}
     </View>
   );
@@ -272,9 +285,14 @@ function SkippedView({ document, colors }: { document: WalkthroughDocument; colo
 }
 
 /** The hunks no stop covered: the reader still has to read them. */
-function UncoveredView({ document, hunks, colors }: { document: WalkthroughDocument; hunks: Map<string, Hunk>; colors: Colors }) {
-  const [open, setOpen] = useState(false);
-  const count = document.uncoveredHunkIds.length;
+function UncoveredView({ document, hunks, open, setOpen, colors }: {
+  document: WalkthroughDocument;
+  hunks: Hunk[];
+  open: boolean;
+  setOpen: (open: boolean) => void;
+  colors: Colors;
+}) {
+  const count = hunks.length;
   if (count === 0 && document.routine.length === 0) return null;
   return (
     <View style={styles.contents}>
@@ -285,10 +303,7 @@ function UncoveredView({ document, hunks, colors }: { document: WalkthroughDocum
         icon={open ? "ChevronDown" : "ChevronRight"}
         onPress={() => setOpen(!open)}
       />
-      {open && document.uncoveredHunkIds.map((id) => {
-        const hunk = hunks.get(id);
-        return hunk ? <DocumentHunkView key={id} hunk={hunk} colors={colors} /> : null;
-      })}
+      {open && hunks.map((hunk) => <DocumentHunkView key={hunk.id} hunk={hunk} colors={colors} />)}
       {open ? <SkippedView document={document} colors={colors} /> : null}
     </View>
   );
@@ -349,6 +364,12 @@ function DocumentView({
   colors: Colors;
 }) {
   const staleStopIds = new Set(staleness?.staleStopIds);
+  const outdatedHunks = new Set(staleness?.outdatedHunkIds ?? staleness?.missingHunkIds);
+  const uncoveredHunks = staleness?.currentUncoveredHunks ?? [...new Set(document.uncoveredHunkIds)].flatMap((id) => {
+    const hunk = hunks.get(id);
+    return hunk && !outdatedHunks.has(id) ? [hunk] : [];
+  });
+  const [uncoveredOpen, setUncoveredOpen] = useState(false);
   return (
     <View style={styles.document}>
       <StalenessView document={document} staleness={staleness} staleStopIds={staleStopIds} colors={colors} />
@@ -356,9 +377,9 @@ function DocumentView({
       {document.focus ? <Text style={[styles.prose, { color: colors.foreground }]}>{document.focus}</Text> : null}
       <ContentsView document={document} colors={colors} />
       {document.chapters.map((chapter) => (
-        <ChapterView key={chapter.id} chapter={chapter} staleStops={staleStopIds} hunks={hunks} colors={colors} />
+        <ChapterView key={chapter.id} chapter={chapter} staleStops={staleStopIds} outdatedHunks={outdatedHunks} hunks={hunks} colors={colors} />
       ))}
-      <UncoveredView document={document} hunks={hunks} colors={colors} />
+      <UncoveredView document={document} hunks={uncoveredHunks} open={uncoveredOpen} setOpen={setUncoveredOpen} colors={colors} />
     </View>
   );
 }

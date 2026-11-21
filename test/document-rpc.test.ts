@@ -199,43 +199,60 @@ const oneStop = (hunks: string[], prose: string) => ({
 });
 
 describe("the walkthrough document", () => {
-  it("reports stale stops, new hunks and removed hunks when the working tree changes", async () => {
+  it("marks edited and removed anchors outdated and returns every current uncovered patch once", async () => {
     const bContents = (first: number, last: number) =>
       `export const first = ${first};\n${"\n".repeat(12)}export const last = ${last};\n`;
-    const repo = await createRepo(["a.ts", "b.ts"], { "b.ts": bContents(1, 1) });
+    const repo = await createRepo(["a.ts", "b.ts", "d.ts", "e.ts", "f.ts"], { "b.ts": bContents(1, 1) });
     await writeFile(join(repo, "a.ts"), "export const a_ts = 2;\n");
     await writeFile(join(repo, "b.ts"), bContents(2, 1));
+    await writeFile(join(repo, "d.ts"), "export const d_ts = 2;\n");
+    await writeFile(join(repo, "e.ts"), "export const e_ts = 2;\n");
+    await writeFile(join(repo, "f.ts"), "export const f_ts = 2;\n");
     const { handlers } = load();
     const fake = fakePaseo(repo);
     const original = await hunkIdsOf(handlers, fake.paseo);
     const { jobId } = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
     fake.release(answer({
       chapters: [{
-        stops: [oneStop(["h1"], "The value of a.ts moved."), oneStop(["h2"], "The value of b.ts moved.")],
+        stops: [
+          oneStop(["h1"], "The value of a.ts moved."),
+          oneStop(["h2"], "The value of b.ts moved."),
+          oneStop(["h3"], "The value of d.ts moved."),
+        ],
       }],
     }));
     const finished = await waitForTerminal(handlers, fake.paseo, jobId);
     expect(finished.job?.state).toBe("done");
     expect(finished.staleness?.stale).toBe(false);
+    expect(finished.document?.uncoveredHunkIds).toEqual(original.slice(3));
 
     await writeFile(join(repo, "a.ts"), "export const a_ts = 3;\n");
     await writeFile(join(repo, "b.ts"), bContents(1, 2));
     await writeFile(join(repo, "c.ts"), "export const c_ts = 1;\n");
+    await writeFile(join(repo, "f.ts"), "export const f_ts = 1;\n");
     const [changed, addedToExistingFile, added] = await hunkIdsOf(handlers, fake.paseo);
     expect(changed).toMatch(/^unstaged:a\.ts:/);
     expect(addedToExistingFile).toMatch(/^unstaged:b\.ts:/);
     expect(added).toMatch(/^unstaged:c\.ts:/);
 
-    const edited = await callStatus(handlers, fake.paseo, jobId);
+    const edited = statusRpc.output.parse(await callStatus(handlers, fake.paseo, jobId));
     expect(edited.staleness).toMatchObject({
       stale: true,
-      staleStopIds: ["stop-1-1"],
+      staleStopIds: ["stop-1-1", "stop-1-2"],
       uncoveredHunkIds: [changed, addedToExistingFile, added],
-      missingHunkIds: [original[1]],
+      missingHunkIds: [original[1], original[4]],
+      outdatedHunkIds: [original[0], original[1], original[4]],
+      currentUncoveredHunks: [
+        { id: changed, path: "a.ts", patch: expect.stringContaining("+export const a_ts = 3;") },
+        { id: addedToExistingFile, path: "b.ts", patch: expect.stringContaining("+export const last = 2;") },
+        { id: added, path: "c.ts", patch: expect.stringContaining("+export const c_ts = 1;") },
+        { id: original[3], path: "e.ts", patch: expect.stringContaining("+export const e_ts = 2;") },
+      ],
     });
-    expect(statusRpc.output.parse(edited).hunks).toEqual([
+    expect(edited.hunks.slice(0, 3)).toEqual([
       expect.objectContaining<Partial<Hunk>>({ id: original[0], path: "a.ts", patch: expect.stringContaining("+export const a_ts = 2;") }),
       expect.objectContaining<Partial<Hunk>>({ id: original[1], path: "b.ts", patch: expect.stringContaining("+export const first = 2;") }),
+      expect.objectContaining<Partial<Hunk>>({ id: original[2], path: "d.ts", patch: expect.stringContaining("+export const d_ts = 2;") }),
     ]);
   }, 30_000);
 

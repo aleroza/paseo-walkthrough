@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { WalkthroughScope } from "../shared/constants";
 import type { DiffFile, Hunk } from "../shared/types";
 
 // Ported from OpenChamber (MIT, Copyright (c) 2025 Bohdan Triapitsyn), packages/web/server/lib/walkthrough/hunks.ts.
@@ -37,9 +38,10 @@ interface PendingHunk {
 }
 
 /** Parses a unified diff into the files and hunks the walkthrough talks about. */
-export function parsePatch(patch: string, scope: string): DiffFile[] {
+export function parsePatch(patch: string, scope: Exclude<WalkthroughScope, "all">): DiffFile[] {
   if (!patch.trim()) return [];
 
+  const section = scope === "staged" || scope === "unstaged" ? { section: scope } : {};
   const lines = patch.split(/\r?\n/);
   const files: DiffFile[] = [];
   let current: (DiffFile & { digests: Map<string, number> }) | null = null;
@@ -58,6 +60,7 @@ export function parsePatch(patch: string, scope: string): DiffFile[] {
     const entry: Hunk = {
       id: `${scope}:${current.path}:${digest}${suffix}`,
       path: current.path,
+      ...section,
       header: hunk.header,
       oldStart: hunk.oldStart,
       oldLines: hunk.oldLines,
@@ -74,6 +77,7 @@ export function parsePatch(patch: string, scope: string): DiffFile[] {
   const closeFile = () => {
     closeHunk();
     if (!current) return;
+    current.status = statusFromHeaderLines(headerLines);
     current.binary = current.binary || isBinaryHeader(headerLines);
     const { digests: _digests, ...file } = current;
     files.push(file);
@@ -87,6 +91,7 @@ export function parsePatch(patch: string, scope: string): DiffFile[] {
       const paths = parsePathsFromFileHeader(line);
       current = {
         path: paths?.newPath || paths?.oldPath || "",
+        ...section,
         oldPath: paths && paths.oldPath !== paths.newPath ? paths.oldPath : null,
         status: "modified",
         binary: false,
@@ -101,7 +106,6 @@ export function parsePatch(patch: string, scope: string): DiffFile[] {
     const hunkMatch = HUNK_HEADER.exec(line);
     if (hunkMatch) {
       closeHunk();
-      current.status = statusFromHeaderLines(headerLines);
       hunk = {
         header: line,
         oldStart: Number.parseInt(hunkMatch[1] ?? "", 10),

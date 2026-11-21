@@ -8,9 +8,10 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { cancelRpc, commitsRpc, diffRpc, generateRpc, modelsRpc, saveSettingsRpc, settingsRpc, statusRpc } from "../shared/contracts";
 import type { ChapterIcon, StopImportance, WalkthroughJobState, WalkthroughScope } from "../shared/constants";
 import { DEFAULT_PANEL_STATE, LANGUAGES, LANGUAGE_NAMES } from "../shared/constants";
-import type { Chapter, CommitOption, Diff, DiffFile, Hunk, ModelOption, PanelState, Staleness, Stop, WalkthroughDocument } from "../shared/types";
+import type { Chapter, CommitOption, Diff, DiffFile, Hunk, JobStatus, ModelOption, PanelState, Staleness, Stop, WalkthroughDocument } from "../shared/types";
 import { panelStateSchema } from "../shared/types";
 import { stopAnchorId, useReadingNavigation } from "./reading-navigation";
+import { DiffSections, sectionLabel } from "./diff-sections";
 
 const POLL_MS = 4_000;
 const STATUS_POLL_MS = 1_500;
@@ -149,9 +150,12 @@ function HunkView({ hunk, colors }: { hunk: Hunk; colors: Colors }) {
 }
 
 function DocumentHunkView({ hunk, colors }: { hunk: Hunk; colors: Colors }) {
+  const section = sectionLabel(hunk.section);
   return (
     <View style={[styles.documentHunk, { backgroundColor: colors.surface1, borderColor: colors.border }]}>
-      <Text style={[styles.hunkPath, { backgroundColor: colors.surface2, color: colors.foreground }]}>{hunk.path}</Text>
+      <Text style={[styles.hunkPath, { backgroundColor: colors.surface2, color: colors.foreground }]}>
+        {section ? `${hunk.path} (${section})` : hunk.path}
+      </Text>
       <View style={styles.anchoredPatch}>
         <HunkView hunk={hunk} colors={colors} />
       </View>
@@ -353,9 +357,10 @@ function StalenessView({
       ] as const).map(([label, locations]) => locations?.length ? (
         <View key={label} style={styles.routineRow}>
           <Text style={[styles.chapterTitle, { color: colors.foreground }]}>{label}</Text>
-          {locations.map(({ id, path, header }) => (
-            <Text key={id} style={[styles.meta, { color: colors.foreground }]}>{path} {header}</Text>
-          ))}
+          {locations.map(({ id, path, section, header }) => {
+            const label = sectionLabel(section);
+            return <Text key={id} style={[styles.meta, { color: colors.foreground }]}>{label ? `${path} (${label})` : path} {header}</Text>;
+          })}
         </View>
       ) : null)}
     </View>
@@ -457,14 +462,19 @@ function DiffSummary({ diff, base, error, empty, colors }: DiffSummaryProps) {
   );
 }
 
-function SourceDiff(props: DiffSummaryProps) {
+function SourceDiff({ scope, ...props }: DiffSummaryProps & { scope: WalkthroughScope }) {
   const { diff, colors } = props;
   return (
     <>
       <DiffSummary {...props} />
-      {diff?.files.map((file) => (
-        <FileView key={file.path} file={file} generated={diff.generatedPaths.includes(file.path)} colors={colors} />
-      ))}
+      {diff ? (
+        <DiffSections
+          files={diff.files}
+          showSectionHeaders={scope === "all"}
+          colors={colors}
+          renderFile={(file) => <FileView file={file} generated={diff.generatedPaths.includes(file.path)} colors={colors} />}
+        />
+      ) : null}
     </>
   );
 }
@@ -472,16 +482,13 @@ function SourceDiff(props: DiffSummaryProps) {
 export type CommandJobListener = (workspaceId: string, jobId: string) => void;
 
 export function createDiffPanel(client: PluginClientContext, commandJobListeners: Set<CommandJobListener>) {
-  return function WalkthroughPanel({ workspaceId, theme, layout, tab }: PluginWorkspacePanelProps) {
+  function WalkthroughPanel({ workspaceId, theme, layout, tab }: PluginWorkspacePanelProps) {
     const colors = theme.colors;
     // The scope, the model and the language live in the panel state: the host keeps it per
     // workspace, and the plugin settings API is host scope on daemon 0.15.4.
     const [panelState, setPanelState] = useTabState(tab, panelStateSchema, DEFAULT_PANEL_STATE);
-    const { scope, model, language } = panelState;
+    const { scope, commit, model, language } = panelState;
     const storedState = useRef(tab.state);
-    const restoredWorkspace = useRef<string | null>(null);
-    const [restoredCommit, setRestoredCommit] = useState<string>();
-    const commit = panelState.commit ?? restoredCommit;
     const [draft, setDraft] = useState(commit ?? "");
     const [history, setHistory] = useState<{ commits: CommitOption[]; error: string | null } | null>(null);
     const [diff, setDiff] = useState<Diff | null>(null);
@@ -491,28 +498,35 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
     const [modelsError, setModelsError] = useState<string | null>(null);
     const [jobId, setJobId] = useState<string | null>(null);
     const [statusRefresh, setStatusRefresh] = useState(0);
+    const statusVersion = useRef(0);
     const [stage, setStage] = useState<WalkthroughJobState | null>(null);
     const [stages, setStages] = useState<WalkthroughJobState[]>([]);
     const [jobError, setJobError] = useState<string | null>(null);
-    const [document, setDocument] = useState<WalkthroughDocument | null>(null);
-    const [documentJobId, setDocumentJobId] = useState<string | null>(null);
-    const [staleness, setStaleness] = useState<Staleness | null>(null);
-    const [documentHunks, setDocumentHunks] = useState<Hunk[]>([]);
+    const [actionError, setActionError] = useState<string | null>(null);
+    const [displayed, setDisplayed] = useState<Pick<JobStatus, "document" | "staleness" | "hunks" | "source" | "documentMetadata">>();
+    const { document, staleness = null, source, documentMetadata } = displayed ?? {};
     const [starting, setStarting] = useState(false);
     const [cancelling, setCancelling] = useState(false);
     const [openMenu, setOpenMenu] = useState<"source" | "options" | null>(null);
     const [sourceDiffOpen, setSourceDiffOpen] = useState(false);
     const sourceButton = useRef<ComponentRef<typeof View>>(null);
 
+    const refreshStatus = useCallback(() => {
+      statusVersion.current += 1;
+      setStatusRefresh(statusVersion.current);
+    }, []);
+
     useEffect(() => {
-      const selectJob: CommandJobListener = (commandWorkspaceId, commandJobId) => {
-        if (commandWorkspaceId === workspaceId) setJobId(commandJobId);
+      const selectJob: CommandJobListener = (commandWorkspaceId) => {
+        if (commandWorkspaceId !== workspaceId) return;
+        setActionError(null);
+        refreshStatus();
       };
       commandJobListeners.add(selectJob);
       return () => {
         commandJobListeners.delete(selectJob);
       };
-    }, [commandJobListeners, workspaceId]);
+    }, [commandJobListeners, refreshStatus, workspaceId]);
 
     const choose = useCallback(
       (next: Partial<PanelState>) => {
@@ -608,43 +622,35 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
 
     const running = stage !== null && RUNNING_STAGES.includes(stage);
 
-    const hunks = useMemo(() => new Map(documentHunks.map((hunk) => [hunk.id, hunk])), [documentHunks]);
+    const documentHunks = displayed?.hunks;
+    const hunks = useMemo(() => new Map(documentHunks?.map((hunk) => [hunk.id, hunk])), [documentHunks]);
+    const displayedSource = SOURCES.find(({ scope }) => scope === source?.scope)?.label ?? "Unknown source";
+    const displayedCommit = source?.scope === "commit" ? ` ${source.commit ?? "unknown"}` : "";
+    const displayedModel = documentMetadata?.model ?? "Unknown model";
+    const displayedLanguage = documentMetadata?.language ? LANGUAGE_NAMES[documentMetadata.language] : "Unknown language";
+    const documentDetails = `Showing ${displayedSource}${displayedCommit} · ${displayedModel} · ${displayedLanguage}`;
 
     useEffect(() => {
       let active = true;
       let timer: ReturnType<typeof setTimeout> | undefined;
+      const current = () => active && statusVersion.current === statusRefresh;
 
       async function loadStatus() {
         try {
-          const result = await client.rpc(statusRpc, { workspaceId, jobId });
-          if (!active) return;
+          const result = await client.rpc(statusRpc, { workspaceId, jobId: null });
+          if (!current()) return;
+          setJobId(result.job?.id ?? null);
           setStage(result.job?.state ?? null);
           setStages(result.job?.stages ?? []);
           setJobError(result.job?.error ?? null);
-          setDocument(result.document);
-          setDocumentJobId(result.job?.state === "done" ? result.job.id : null);
-          setDocumentHunks(result.hunks);
-          setStaleness(result.staleness);
-          if (!jobId && restoredWorkspace.current !== workspaceId) {
-            restoredWorkspace.current = workspaceId;
-            const cachedCommit = result.source?.commit;
-            if (cachedCommit) {
-              setRestoredCommit(cachedCommit);
-              setDraft((current) => current || cachedCommit);
-            }
-          }
-          if (!jobId && result.job && RUNNING_STAGES.includes(result.job.state)) {
-            setJobId(result.job.id);
-            return;
-          }
+          if (result.document) setDisplayed(result);
           if (result.job && RUNNING_STAGES.includes(result.job.state)) {
             timer = setTimeout(loadStatus, STATUS_POLL_MS);
           } else if (result.document) {
             timer = setTimeout(loadStatus, POLL_MS);
           }
         } catch {
-          if (!active) return;
-          setStaleness(null);
+          if (!current()) return;
           timer = setTimeout(loadStatus, POLL_MS);
         }
       }
@@ -654,7 +660,7 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
         active = false;
         clearTimeout(timer);
       };
-    }, [client, workspaceId, jobId, statusRefresh]);
+    }, [client, workspaceId, statusRefresh]);
 
     const selectCommit = (hash: string) => {
       setDraft(hash);
@@ -680,6 +686,7 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
 
     const generate = useCallback(() => {
       setStarting(true);
+      setActionError(null);
       client
         .rpc(generateRpc, {
           workspaceId,
@@ -689,35 +696,33 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
           language,
         })
         .then(
-          (result) => {
-            setJobId(result.jobId);
-            setJobError(null);
-            setDocument(null);
-            setStaleness(null);
+          () => {
+            refreshStatus();
             setStarting(false);
           },
           (cause: unknown) => {
-            setJobError(cause instanceof Error ? cause.message : String(cause));
+            setActionError(cause instanceof Error ? cause.message : String(cause));
             setStarting(false);
           },
         );
-    }, [client, workspaceId, scope, commit, model, language]);
+    }, [client, workspaceId, scope, commit, model, language, refreshStatus]);
 
     const cancel = useCallback(() => {
       if (!jobId) return;
       setCancelling(true);
+      setActionError(null);
       client.rpc(cancelRpc, { workspaceId, jobId }).then(
         (result) => {
           setCancelling(false);
-          if (result.error) setJobError(result.error);
-          if (result.cancelled) setStatusRefresh((previous) => previous + 1);
+          if (result.error) setActionError(result.error);
+          refreshStatus();
         },
         (cause: unknown) => {
           setCancelling(false);
-          setJobError(cause instanceof Error ? cause.message : String(cause));
+          setActionError(cause instanceof Error ? cause.message : String(cause));
         },
       );
-    }, [client, workspaceId, jobId]);
+    }, [client, workspaceId, jobId, refreshStatus]);
 
     const modelOptions = useMemo(
       () => [
@@ -871,7 +876,7 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
           {modelGone ? (
             <Text style={[styles.meta, { color: colors.statusWarning }]}>The selected model is unavailable.</Text>
           ) : null}
-          {stage && (running || !document) ? (
+          {stage && (stage !== "done" || !document) ? (
             <View style={styles.stages} accessibilityLiveRegion="polite">
               <Text style={[styles.stage, { color: colors.foreground }]}>{STAGE_LABELS[stage]}</Text>
               <View style={styles.trail}>
@@ -884,10 +889,13 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
               </View>
             </View>
           ) : null}
-          {jobError ? <Text style={[styles.meta, { color: colors.statusDanger }]}>{jobError}</Text> : null}
+          {actionError || jobError ? (
+            <Text accessibilityLiveRegion="polite" style={[styles.meta, { color: colors.statusDanger }]}>{actionError ?? jobError}</Text>
+          ) : null}
+          {document ? <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{documentDetails}</Text> : null}
         </View>
         {document ? (
-          <DocumentReader key={documentJobId ?? JSON.stringify(document)} document={document} staleness={staleness} hunks={hunks} colors={colors} compact={layout.compact} />
+          <DocumentReader key={documentMetadata?.jobId ?? workspaceId} document={document} staleness={staleness} hunks={hunks} colors={colors} compact={layout.compact} />
         ) : (
           <ScrollView style={styles.readingScroll} contentContainerStyle={[styles.content, layout.compact && styles.contentCompact]}>
             <DiffSummary {...diffSummary} />
@@ -896,12 +904,16 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
         <Modal title={`Source diff · ${sourceLabel}`} open={sourceDiffOpen} onOpenChange={setSourceDiffOpen}>
           {sourceDiffOpen ? (
             <Modal.Content contentContainerStyle={[styles.content, layout.compact && styles.contentCompact]}>
-              <SourceDiff {...diffSummary} />
+              <SourceDiff {...diffSummary} scope={scope} />
             </Modal.Content>
           ) : null}
         </Modal>
       </View>
     );
+  }
+
+  return function WorkspaceWalkthroughPanel(props: PluginWorkspacePanelProps) {
+    return <WalkthroughPanel key={props.workspaceId} {...props} />;
   };
 }
 

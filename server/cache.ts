@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
-import { diffSchema, documentSchema, walkthroughSourceSchema } from "../shared/types";
+import { diffSchema, documentMetadataSchema, documentSchema, walkthroughSourceSchema } from "../shared/types";
 import type { Diff, WalkthroughSource } from "../shared/types";
 import { writePrivateFile } from "./store";
 
@@ -11,6 +11,7 @@ const entrySchema = z.object({
   source: walkthroughSourceSchema,
   diff: diffSchema,
   document: documentSchema,
+  metadata: documentMetadataSchema.optional(),
 });
 export type CacheEntry = z.infer<typeof entrySchema>;
 
@@ -26,7 +27,7 @@ export function identifyChange(
   diff: Diff,
 ) {
   const files = diff.files.map((file) =>
-    hash([file.path, file.oldPath, file.status, file.binary, file.hunks.map((hunk) => hash([hunk.id, hunk.patch])).sort()]),
+    hash([file.path, file.oldPath, file.status, file.binary, file.hunks.map((hunk) => hash([hunk.id, hunk.patch])).sort(), ...(file.section ? [file.section] : [])]),
   );
   return {
     bucket: hash([root, source.scope]),
@@ -56,11 +57,11 @@ export function createWalkthroughCache(dataDirectory: string) {
     last(workspaceId: string) {
       return readEntry(workspacePath(workspaceId));
     },
-    async save(bucket: string, workspaceId: string, entry: CacheEntry, canWrite: () => boolean, cacheHit: boolean) {
+    async save(bucket: string, workspaceId: string, entry: CacheEntry, cacheHit: boolean) {
       const contents = JSON.stringify(entry);
-      const writes = [writePrivateFile(workspacePath(workspaceId), contents, canWrite)];
+      const writes = [writePrivateFile(workspacePath(workspaceId), contents)];
       // The workspace's snapshot survives replacement of a shared source by another workspace.
-      if (!cacheHit) writes.push(writePrivateFile(bucketPath(bucket), contents, canWrite));
+      if (!cacheHit) writes.push(writePrivateFile(bucketPath(bucket), contents));
       await Promise.allSettled(writes);
     },
   };

@@ -75,7 +75,7 @@ const sourceLine = (scope: WalkthroughScope, commit?: string) => {
   if (scope === "unstaged") return "Uncommitted local changes (unstaged).";
   if (scope === "branch") return "All work on the current branch that is not in its base branch. Changes merged in from the base are already excluded.";
   if (scope === "commit") return `Only the changes introduced by commit ${commit ?? ""}, relative to its first parent (or the empty tree for a root commit).`;
-  return "Uncommitted local changes (staged and unstaged).";
+  return "Uncommitted local changes (staged and unstaged). Staged hunks compare HEAD with the index. Unstaged hunks compare the index with the working tree and include untracked files. Describe both sections even when an unstaged edit reverses a staged edit.";
 };
 
 export interface PromptInput {

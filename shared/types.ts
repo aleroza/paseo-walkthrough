@@ -8,9 +8,13 @@ import {
   WALKTHROUGH_SCOPE,
 } from "./constants";
 
+const diffSectionSchema = z.enum(["staged", "unstaged"]);
+export type DiffSection = z.infer<typeof diffSectionSchema>;
+
 export const hunkSchema = z.object({
   id: z.string(),
   path: z.string(),
+  section: diffSectionSchema.optional(),
   header: z.string(),
   oldStart: z.number().int(),
   oldLines: z.number().int(),
@@ -24,6 +28,7 @@ export type Hunk = z.infer<typeof hunkSchema>;
 
 export const diffFileSchema = z.object({
   path: z.string(),
+  section: diffSectionSchema.optional(),
   oldPath: z.string().nullable(),
   status: z.enum(["added", "deleted", "renamed", "modified"]),
   binary: z.boolean(),
@@ -85,7 +90,7 @@ export const documentSchema = z.object({
 });
 export type WalkthroughDocument = z.infer<typeof documentSchema>;
 
-const hunkLocationSchema = hunkSchema.pick({ id: true, path: true, header: true });
+const hunkLocationSchema = hunkSchema.pick({ id: true, path: true, section: true, header: true });
 
 export const stalenessSchema = z.object({
   stale: z.boolean(),
@@ -106,6 +111,19 @@ export type WalkthroughSource = z.infer<typeof walkthroughSourceSchema>;
 export const sourceRequestSchema = walkthroughSourceSchema.extend({ workspaceId: z.string() });
 export type SourceRequest = z.infer<typeof sourceRequestSchema>;
 
+const walkthroughRequestSchema = walkthroughSourceSchema.extend({
+  model: z.string().nullable(),
+  language: z.enum(LANGUAGES),
+});
+export type WalkthroughRequest = z.infer<typeof walkthroughRequestSchema>;
+
+export const documentMetadataSchema = z.object({
+  jobId: z.string(),
+  model: z.string(),
+  language: z.enum(LANGUAGES),
+}).partial();
+export type DocumentMetadata = z.infer<typeof documentMetadataSchema>;
+
 export const jobSchema = z.object({
   id: z.string(),
   workspaceId: z.string(),
@@ -114,6 +132,7 @@ export const jobSchema = z.object({
   stages: z.array(z.enum(JOB_STATES)),
   error: z.string().nullable(),
   startedAt: z.number(),
+  request: walkthroughRequestSchema.optional(),
 });
 export type WalkthroughJob = z.infer<typeof jobSchema>;
 
@@ -123,6 +142,7 @@ export const jobStatusSchema = z.object({
   staleness: stalenessSchema.nullable(),
   hunks: z.array(hunkSchema).default([]),
   source: walkthroughSourceSchema.optional(),
+  documentMetadata: documentMetadataSchema.optional(),
 });
 export type JobStatus = z.infer<typeof jobStatusSchema>;
 

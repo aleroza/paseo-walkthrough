@@ -1,21 +1,23 @@
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, onTestFinished } from "vitest";
 import contribute from "../index.server";
 import { cancelRpc, generateRpc, statusRpc } from "../shared/contracts";
 import type { PaseoApi } from "../server/host-types";
 
 let homeRoot = "";
+const homeRoots: string[] = [];
 
-beforeAll(async () => {
+beforeEach(async () => {
   homeRoot = await mkdtemp(join(tmpdir(), "walkthrough-home-"));
+  homeRoots.push(homeRoot);
   process.env.PASEO_HOME = join(homeRoot, "home");
 });
 
 afterAll(async () => {
   delete process.env.PASEO_HOME;
-  await rm(homeRoot, { recursive: true, force: true });
+  await Promise.all(homeRoots.map((root) => rm(root, { recursive: true, force: true })));
 });
 
 async function createRepo(): Promise<string> {

@@ -7,7 +7,7 @@ import { isGeneratedArtifact } from "./generated";
 import { parsePatch } from "./patch";
 
 interface Section {
-  scope: string;
+  scope: Exclude<WalkthroughScope, "all">;
   patch: string;
 }
 
@@ -53,13 +53,14 @@ export async function collectDiff(directory: string, scope: WalkthroughScope, co
   const collected = await collectSections(directory, scope, commit);
   const files = mergeFiles(collected.sections.flatMap((section) => parsePatch(section.patch, section.scope)));
   const hunkCount = files.reduce((sum, file) => sum + file.hunks.length, 0);
+  const paths = [...new Set(files.map((file) => file.path))];
 
   return {
     diff: {
       files,
       hunkCount,
-      fileCount: files.length,
-      generatedPaths: files.filter((file) => isGeneratedArtifact(file.path)).map((file) => file.path),
+      fileCount: paths.length,
+      generatedPaths: paths.filter(isGeneratedArtifact),
       repository: true,
     },
     base: collected.base,
@@ -78,25 +79,20 @@ async function collectSections(directory: string, scope: WalkthroughScope, commi
     return { sections: [{ scope, patch: gitOutput(shown, "show") }], base: null };
   }
 
-  if (scope === "staged") {
-    const staged = await git(directory, ["diff", "--relative", "--cached", ...PATCH_OPTIONS]);
-    return { sections: [{ scope, patch: gitOutput(staged, "diff") }], base: null };
-  }
-
-  if (scope === "unstaged") {
-    const unstaged = await git(directory, ["diff", "--relative", ...PATCH_OPTIONS]);
-    return { sections: [{ scope, patch: gitOutput(unstaged, "diff") }, ...(await untrackedSections(directory, scope))], base: null };
-  }
-
   if (scope === "branch") return branchSections(directory);
 
-  // Everything in the working tree against HEAD: the state the reviewer would see in the app.
-  const head = await git(directory, ["rev-parse", "--verify", "--quiet", "HEAD"]);
-  const from = head.code === 1
-    ? gitOutput(await git(directory, ["hash-object", "-t", "tree", "--stdin"]), "hash-object").trim()
-    : gitOutput(head, "rev-parse").trim();
-  const all = await git(directory, ["diff", "--relative", ...PATCH_OPTIONS, from, "--"]);
-  return { sections: [{ scope, patch: gitOutput(all, "diff") }, ...(await untrackedSections(directory, scope))], base: null };
+  const sections: Section[] = [];
+  if (scope !== "unstaged") {
+    const staged = await git(directory, ["diff", "--relative", "--cached", ...PATCH_OPTIONS]);
+    sections.push({ scope: "staged", patch: gitOutput(staged, "diff") });
+  }
+
+  if (scope !== "staged") {
+    const unstaged = await git(directory, ["diff", "--relative", ...PATCH_OPTIONS]);
+    sections.push({ scope: "unstaged", patch: gitOutput(unstaged, "diff") }, ...(await untrackedSections(directory)));
+  }
+
+  return { sections, base: null };
 }
 
 /** The commits of the current branch that its base branch does not have. */
@@ -113,7 +109,7 @@ async function branchSections(directory: string): Promise<{ sections: Section[];
 }
 
 /** Untracked files are part of the working tree: git has no patch for them until they are staged, so they are diffed against nothing. */
-async function untrackedSections(directory: string, scope: string): Promise<Section[]> {
+async function untrackedSections(directory: string): Promise<Section[]> {
   const listed = await git(directory, ["ls-files", "--others", "--exclude-standard", "-z"]);
   const paths = gitOutput(listed, "ls-files").split("\0").filter(Boolean);
 
@@ -122,7 +118,7 @@ async function untrackedSections(directory: string, scope: string): Promise<Sect
     const result = await git(directory, ["diff", ...PATCH_OPTIONS, "--no-index", "--", "/dev/null", path]);
     // With --no-index, Git returns 1 for a difference and for some errors.
     const differenceCode = /^(?:error|fatal):/m.test(result.stderr) ? 0 : 1;
-    sections.push({ scope, patch: gitOutput(result, "diff", differenceCode) });
+    sections.push({ scope: "unstaged", patch: gitOutput(result, "diff", differenceCode) });
   }
   return sections;
 }
@@ -130,9 +126,10 @@ async function untrackedSections(directory: string, scope: string): Promise<Sect
 function mergeFiles(files: DiffFile[]): DiffFile[] {
   const merged = new Map<string, DiffFile>();
   for (const file of files) {
-    const existing = merged.get(file.path);
+    const key = `${file.section ?? ""}:${file.path}`;
+    const existing = merged.get(key);
     if (!existing) {
-      merged.set(file.path, file);
+      merged.set(key, file);
       continue;
     }
     existing.hunks.push(...file.hunks);

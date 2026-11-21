@@ -419,6 +419,7 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
     const [base, setBase] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [models, setModels] = useState<ModelOption[]>([]);
+    const [defaultModel, setDefaultModel] = useState<string | null>(null);
     const [modelsError, setModelsError] = useState<string | null>(null);
     const [jobId, setJobId] = useState<string | null>(null);
     const [statusRefresh, setStatusRefresh] = useState(0);
@@ -466,6 +467,7 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
       client.rpc(modelsRpc, { workspaceId }).then(
         (result) => {
           setModels(result.models);
+          setDefaultModel(result.defaultModel);
           setModelsError(result.error);
         },
         (cause: unknown) => setModelsError(cause instanceof Error ? cause.message : String(cause)),
@@ -545,6 +547,13 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
     }, [client, workspaceId, scope, commit]);
 
     const running = stage !== null && RUNNING_STAGES.includes(stage);
+    const regenerate =
+      staleness?.stale === false &&
+      source?.scope === scope &&
+      (scope !== "commit" || source.commit === commit?.toLowerCase()) &&
+      documentMetadata?.model === (model ?? defaultModel) &&
+      documentMetadata?.language === language;
+    const generateAction = starting || running ? "Generating" : regenerate ? "Regenerate" : "Generate";
 
     const documentHunks = displayed?.hunks;
     const hunks = useMemo(() => new Map(documentHunks?.map((hunk) => [hunk.id, hunk])), [documentHunks]);
@@ -618,6 +627,7 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
           ...(scope === "commit" ? { commit } : {}),
           model,
           language,
+          force: regenerate,
         })
         .then(
           () => {
@@ -629,7 +639,7 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
             setStarting(false);
           },
         );
-    }, [client, workspaceId, scope, commit, model, language, refreshStatus]);
+    }, [client, workspaceId, scope, commit, model, language, regenerate, refreshStatus]);
 
     const cancel = useCallback(() => {
       if (!jobId) return;
@@ -700,8 +710,8 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
               onPress={() => setOpenMenu(sourceMenuOpen ? null : "source")}
             />
             <ToolbarButton
-              label={starting || running ? "Generating…" : "Generate"}
-              accessibilityLabel={starting || running ? "Generating the walkthrough" : "Generate the walkthrough"}
+              label={generateAction === "Generating" ? "Generating…" : generateAction}
+              accessibilityLabel={`${generateAction} the walkthrough`}
               colors={colors}
               primary
               disabled={generateDisabled}

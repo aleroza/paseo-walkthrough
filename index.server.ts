@@ -44,10 +44,10 @@ export default function contribute(server: PluginServerContext) {
 
   server.handle(modelsRpc, async (_input, { paseo }) => {
     try {
-      const models = await listAvailableModels(paseo);
-      return { models: models.map(({ provider, id, label }) => ({ provider, id, label })), error: null };
+      const { models, defaultModel } = await listAvailableModels(paseo);
+      return { models: models.map(({ provider, id, label }) => ({ provider, id, label })), defaultModel, error: null };
     } catch (error) {
-      return { models: [], error: message(error) };
+      return { models: [], defaultModel: null, error: message(error) };
     }
   });
 
@@ -70,7 +70,7 @@ export default function contribute(server: PluginServerContext) {
     return { settings: await writeWorkspaceSettings(dir, workspaceId, settings) };
   });
 
-  server.handle(generateRpc, async ({ workspaceId, scope, commit, model, language }, { paseo }) => {
+  server.handle(generateRpc, async ({ workspaceId, scope, commit, model, language, force }, { paseo }) => {
     await requireStorage();
     const remembered = await readWorkspaceSettings(dir, workspaceId);
     const jobId = service.start(paseo, {
@@ -79,6 +79,7 @@ export default function contribute(server: PluginServerContext) {
       commit: scope === undefined ? commit ?? remembered.commit : commit,
       model: model === undefined ? remembered.model : model,
       language: language ?? remembered.language,
+      force,
     });
     return { jobId };
   });

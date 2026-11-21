@@ -351,6 +351,45 @@ describe("walkthrough cache", () => {
     await reopened.cleanup();
   });
 
+  it("regenerates the exact cached request and saves the replacement", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    const { handlers, cleanup } = load();
+    onTestFinished(cleanup);
+    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
+    const request = { workspaceId: "ws-1", scope: "all", model: "test/model-1", language: "en" };
+    const generate = async (force?: boolean) => generateRpc.output.parse(
+      await handlerFor(handlers, generateRpc.name)(
+        generateRpc.input.parse({ ...request, force }),
+        { paseo: fake.paseo },
+      ),
+    );
+
+    const original = await generate();
+    fake.release(modelAnswer(["h1"], "Original walkthrough"));
+    expect((await waitForTerminal(handlers, fake.paseo, original.jobId)).document?.title).toBe("Original walkthrough");
+
+    const ordinary = await generate();
+    const cached = await waitForTerminal(handlers, fake.paseo, ordinary.jobId);
+    expect(cached.job?.stages).toEqual(["collecting", "done"]);
+    expect(cached.document?.title).toBe("Original walkthrough");
+
+    const replacement = await generate(true);
+    const active = await waitFor(handlers, fake.paseo, replacement.jobId, (status) => status.job?.state !== "collecting");
+    expect(active.job?.state).toBe("asking");
+    expect(active.document?.title).toBe("Original walkthrough");
+    expect(await generate(true)).toEqual(replacement);
+    expect(await generate()).toEqual(replacement);
+    fake.release(modelAnswer(["h1"], "Fresh walkthrough"));
+    expect((await waitForTerminal(handlers, fake.paseo, replacement.jobId)).document?.title).toBe("Fresh walkthrough");
+
+    const next = await generate();
+    const updated = await waitForTerminal(handlers, fake.paseo, next.jobId);
+    expect(updated.job?.stages).toEqual(["collecting", "done"]);
+    expect(updated.document?.title).toBe("Fresh walkthrough");
+    expect(fake.promptCount()).toBe(2);
+  });
+
   it("asks the model after the diff changes and replaces the older cache entry", async () => {
     const repo = await createRepo();
     const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
@@ -444,6 +483,42 @@ describe("walkthrough cache", () => {
     const reopened = load();
     onTestFinished(reopened.cleanup);
     expect(statusRpc.output.parse(await callStatus(reopened.handlers, fake.paseo, null))).toMatchObject(retained);
+  });
+
+  it.each(["failed", "cancelled"] as const)("keeps the exact cache entry after a %s regeneration", async (outcome) => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    const { handlers, cleanup } = load();
+    onTestFinished(cleanup);
+    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
+    const context = { paseo: fake.paseo };
+    const request = { workspaceId: "ws-1", scope: "all" };
+    const generate = handlerFor(handlers, generateRpc.name);
+
+    const original = generateRpc.output.parse(await generate(request, context));
+    fake.release(modelAnswer(["h1"], "Saved walkthrough"));
+    expect((await waitForTerminal(handlers, fake.paseo, original.jobId)).document?.title).toBe("Saved walkthrough");
+
+    const replacement = generateRpc.output.parse(await generate({ ...request, force: true }, context));
+    const active = await waitFor(handlers, fake.paseo, replacement.jobId, (status) => status.job?.state !== "collecting");
+    expect(active.job?.state).toBe("asking");
+    expect(active.document?.title).toBe("Saved walkthrough");
+    if (outcome === "cancelled") {
+      expect(await handlerFor(handlers, cancelRpc.name)({ workspaceId: request.workspaceId, jobId: replacement.jobId }, context))
+        .toEqual({ cancelled: true, error: null });
+      fake.release(modelAnswer(["h1"], "Late replacement"));
+    } else {
+      fake.release({ error: "The replacement model failed" });
+    }
+
+    const terminal = await waitForTerminal(handlers, fake.paseo, replacement.jobId);
+    expect(terminal.job?.state).toBe(outcome);
+    expect(terminal.document?.title).toBe("Saved walkthrough");
+
+    const reused = generateRpc.output.parse(await generate(request, context));
+    const cached = await waitForTerminal(handlers, fake.paseo, reused.jobId);
+    expect(cached.job?.stages).toEqual(["collecting", "done"]);
+    expect(cached.document?.title).toBe("Saved walkthrough");
   });
 });
 

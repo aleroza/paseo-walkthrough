@@ -245,13 +245,13 @@ describe("walkthrough.models", () => {
     const { handlers, cleanup } = load();
     const fake = fakePaseo(repo);
 
-    const result = (await handlerFor(handlers, modelsRpc.name)({ workspaceId: "ws-1" }, { paseo: fake.paseo })) as {
-      models: { provider: string; id: string; label: string }[];
-      error: string | null;
-    };
+    const result = modelsRpc.output.parse(
+      await handlerFor(handlers, modelsRpc.name)({ workspaceId: "ws-1" }, { paseo: fake.paseo }),
+    );
     await cleanup();
 
     expect(result.error).toBeNull();
+    expect(result.defaultModel).toBe("test/model-1");
     expect(result.models).toEqual([
       { provider: "test", id: "model-1", label: "Model 1" },
       { provider: "test", id: "model-2", label: "Model 2" },

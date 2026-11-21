@@ -22,6 +22,7 @@ export interface GenerationRequest {
   commit?: string;
   model?: string | null;
   language?: string;
+  force?: boolean;
 }
 
 interface Job {
@@ -95,7 +96,7 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
     }
   };
 
-  const run = async (paseo: PaseoApi, job: Job) => {
+  const run = async (paseo: PaseoApi, job: Job, force: boolean) => {
     const { model, language, ...source } = job.request;
     const { scope, commit } = source;
     const signal = job.cancellation.signal;
@@ -144,7 +145,7 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
         await job.persistence;
       };
 
-      const cached = await cache.find(bucket, key);
+      const cached = force ? null : await cache.find(bucket, key);
       if (signal.aborted) return;
       if (cached) {
         await finish(cached.document, true);
@@ -252,7 +253,7 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
       };
       jobs.set(job.id, job);
       latest.set(request.workspaceId, job.id);
-      const task = run(paseo, job);
+      const task = run(paseo, job, request.force === true);
       running.add(task);
       void task.finally(() => {
         running.delete(task);

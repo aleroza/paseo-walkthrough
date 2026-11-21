@@ -35,6 +35,7 @@ export const generateRpc = defineRpc({
     scope: sourceRequestSchema.shape.scope.unwrap().optional(),
     model: z.string().nullable().optional(),
     language: z.string().nullable().default(null),
+    force: z.boolean().optional(),
   }),
   output: z.object({
     jobId: z.string(),
@@ -69,6 +70,7 @@ export const modelsRpc = defineRpc({
   }),
   output: z.object({
     models: z.array(modelOptionSchema),
+    defaultModel: z.string().nullable().default(null),
     error: z.string().nullable(),
   }),
 });

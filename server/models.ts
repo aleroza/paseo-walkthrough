@@ -45,10 +45,18 @@ async function providerModels(paseo: PaseoApi): Promise<ProviderModels[]> {
   return groups;
 }
 
+function defaultModel(groups: ProviderModels[]): string | null {
+  for (const group of groups) {
+    const preferred = group.models.find((model) => model.isDefault) ?? group.models[0];
+    if (preferred) return modelReference(preferred);
+  }
+  return null;
+}
+
 /** The models the daemon has ready, in the order the providers were listed. */
-export async function listAvailableModels(paseo: PaseoApi): Promise<AvailableModel[]> {
+export async function listAvailableModels(paseo: PaseoApi) {
   const groups = await providerModels(paseo);
-  return groups.flatMap((group) => group.models);
+  return { models: groups.flatMap((group) => group.models), defaultModel: defaultModel(groups) };
 }
 
 /**
@@ -67,10 +75,8 @@ export async function resolveModel(paseo: PaseoApi, requested: string | null): P
     return modelReference(chosen);
   }
 
-  for (const group of groups) {
-    const preferred = group.models.find((model) => model.isDefault) ?? group.models[0];
-    if (preferred) return modelReference(preferred);
-  }
+  const preferred = defaultModel(groups);
+  if (preferred) return preferred;
 
   throw new Error("No model is available. Sign in to a provider or pick a model for the walkthrough.");
 }

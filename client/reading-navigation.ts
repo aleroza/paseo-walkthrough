@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { NativeScrollEvent, NativeSyntheticEvent, ScrollView, View } from "react-native";
 
 type Anchor = ComponentRef<typeof View>;
+export type MeasureAnchor = (root: Anchor, measured: (y: number) => void) => void;
 
 const READING_INSET = 24;
 
@@ -12,6 +13,7 @@ export function useReadingNavigation(stopIds: readonly string[]) {
   const scroll = useRef<ScrollView>(null);
   const content = useRef<Anchor>(null);
   const anchors = useRef(new Map<string, Anchor>());
+  const searchAnchors = useRef(new Map<string, MeasureAnchor>());
   const stopPositions = useRef(new Map<string, number>());
   const layout = useRef({ offset: 0, viewportHeight: 0, contentHeight: 0 });
   const frame = useRef<number | null>(null);
@@ -61,16 +63,33 @@ export function useReadingNavigation(stopIds: readonly string[]) {
 
       const id = pendingJump.current;
       if (id === null) return;
-      anchors.current.get(id)?.measureLayout(root, (_x, y) => {
+      const land = (y: number, contentHeight: number, viewportHeight: number) => {
         if (pendingJump.current !== id) return;
+        if (!viewportHeight || y >= contentHeight) return;
         pendingJump.current = null;
-        const { contentHeight, viewportHeight } = layout.current;
         const offset = Math.min(Math.max(0, y), Math.max(0, contentHeight - viewportHeight));
         const stopId = stopIds.find((stopId) => stopAnchorId(stopId) === id);
         landing.current = stopId ? { stopId, offset } : null;
         layout.current.offset = offset;
         scroll.current?.scrollTo({ y: offset, animated: false });
         updateStops();
+      };
+
+      const searchAnchor = searchAnchors.current.get(id);
+      if (searchAnchor) {
+        searchAnchor(root, (y) => {
+          const scrollElement = scroll.current?.getScrollableNode() as Partial<HTMLElement> | undefined;
+          if (typeof scrollElement?.scrollHeight === "number" && typeof scrollElement.clientHeight === "number") {
+            land(y, scrollElement.scrollHeight, scrollElement.clientHeight);
+          } else {
+            root.measure((_x, _y, _width, height) => land(y, height, layout.current.viewportHeight));
+          }
+        });
+        return;
+      }
+      anchors.current.get(id)?.measureLayout(root, (_x, y) => {
+        const { contentHeight, viewportHeight } = layout.current;
+        land(y, contentHeight, viewportHeight);
       });
     });
   }, [stopIds, updateStops]);
@@ -91,6 +110,12 @@ export function useReadingNavigation(stopIds: readonly string[]) {
     refresh();
   }, [refresh]);
 
+  const registerSearchAnchor = useCallback((id: string, measure: MeasureAnchor | null) => {
+    if (measure) searchAnchors.current.set(id, measure);
+    else searchAnchors.current.delete(id);
+    refresh();
+  }, [refresh]);
+
   const onScroll = ({ nativeEvent }: NativeSyntheticEvent<NativeScrollEvent>) => {
     const offset = nativeEvent.contentOffset.y;
     if (landing.current && Math.abs(landing.current.offset - offset) > 1) landing.current = null;
@@ -103,6 +128,7 @@ export function useReadingNavigation(stopIds: readonly string[]) {
     visitedStops,
     jumpTo,
     registerAnchor,
+    registerSearchAnchor,
     refresh,
     rootProps: { ref: content, collapsable: false, onLayout: refresh },
     scrollProps: {

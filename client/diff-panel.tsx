@@ -12,7 +12,7 @@ import type { Chapter, CommitOption, Diff, DiffFile, Hunk, JobStatus, ModelOptio
 import { panelStateSchema } from "../shared/types";
 import { stopAnchorId, useReadingNavigation } from "./reading-navigation";
 import { DiffSections, sectionLabel } from "./diff-sections";
-import { findWalkthroughMatches, hunkBodyLines, searchAnchorId, SearchText, WalkthroughSearch, type WalkthroughMatch } from "./walkthrough-search";
+import { findWalkthroughMatches, hunkBodyLines, searchAnchorId, searchFields, SearchText, WalkthroughSearch, type WalkthroughMatch } from "./walkthrough-search";
 
 const POLL_MS = 4_000;
 const STATUS_POLL_MS = 1_500;
@@ -136,11 +136,12 @@ function ToolbarButton({
 }
 
 function HunkView({ hunk, colors, field }: { hunk: Hunk; colors: Colors; field?: string }) {
+  const fields = field ? searchFields.hunk(field) : undefined;
   return (
     <View style={styles.hunk}>
-      <SearchText field={field && `${field}:header`} style={[styles.hunkHeader, { color: colors.foregroundMuted }]}>{hunk.header}</SearchText>
+      <SearchText field={fields?.header} style={[styles.hunkHeader, { color: colors.foregroundMuted }]}>{hunk.header}</SearchText>
       {hunkBodyLines(hunk).map((line, index) => (
-        <SearchText key={index} field={field && `${field}:line:${index}`} selectable style={[styles.code, { color: lineColor(colors, line) }]}>
+        <SearchText key={index} field={fields?.line(index)} selectable style={[styles.code, { color: lineColor(colors, line) }]}>
           {line.length > 0 ? line : " "}
         </SearchText>
       ))}
@@ -200,7 +201,7 @@ function StopView({ stop, stale, outdatedHunks, hunks, colors, navigation }: {
   navigation: AnchorNavigation;
 }) {
   const { registerAnchor, refresh } = navigation;
-  const field = `stop:${stop.id}`;
+  const fields = searchFields.stop(stop.id);
   const heading = useCallback((view: ComponentRef<typeof View> | null) => {
     registerAnchor(stopAnchorId(stop.id), view);
   }, [registerAnchor, stop.id]);
@@ -208,28 +209,28 @@ function StopView({ stop, stale, outdatedHunks, hunks, colors, navigation }: {
   return (
     <View onLayout={refresh} style={[styles.stop, { borderColor: colors.border }]}>
       <View ref={heading} collapsable={false} onLayout={refresh} style={styles.stopHeader}>
-        <SearchText field={`${field}:title`} accessibilityRole="header" style={[styles.stopTitle, { color: colors.foreground }]}>{stop.title}</SearchText>
+        <SearchText field={fields.title} accessibilityRole="header" style={[styles.stopTitle, { color: colors.foreground }]}>{stop.title}</SearchText>
         {stop.importance === "normal" ? null : (
           <Text style={[styles.meta, { color: importanceColor(colors, stop.importance) }]}>{stop.importance}</Text>
         )}
         {stale ? <Text style={[styles.meta, { color: colors.statusWarning }]}>Out of date</Text> : null}
       </View>
-      <SearchText field={`${field}:prose`} style={[styles.prose, { color: colors.foreground }]}>{stop.prose}</SearchText>
+      <SearchText field={fields.prose} style={[styles.prose, { color: colors.foreground }]}>{stop.prose}</SearchText>
       {stop.observations.map((observation, index) => (
         <View key={index} style={[styles.observation, { backgroundColor: colors.surface2 }]}>
           <View style={styles.observationHeader}>
             <Icon name={ICON_NAMES[observation.icon]} size={12} color={colors.accent} />
-            <SearchText field={`${field}:observation:${index}:kind`} style={[styles.observationKind, { color: colors.accent }]}>{observation.kind}</SearchText>
+            <SearchText field={fields.observation(index).kind} style={[styles.observationKind, { color: colors.accent }]}>{observation.kind}</SearchText>
             {observation.importance === "normal" ? null : (
               <Text style={[styles.meta, { color: importanceColor(colors, observation.importance) }]}>{observation.importance}</Text>
             )}
           </View>
-          <SearchText field={`${field}:observation:${index}:note`} style={[styles.prose, { color: colors.foreground }]}>{observation.note}</SearchText>
+          <SearchText field={fields.observation(index).note} style={[styles.prose, { color: colors.foreground }]}>{observation.note}</SearchText>
         </View>
       ))}
       {stop.hunkIds.map((id, index) => {
         const hunk = hunks.get(id);
-        return hunk ? <DocumentHunkView key={id} hunk={hunk} previous={outdatedHunks.has(id)} colors={colors} field={`${field}:hunk:${index}`} /> : null;
+        return hunk ? <DocumentHunkView key={id} hunk={hunk} previous={outdatedHunks.has(id)} colors={colors} field={fields.hunk(index)} /> : null;
       })}
     </View>
   );
@@ -243,14 +244,14 @@ function ChapterView({ chapter, staleStops, outdatedHunks, hunks, colors, naviga
   colors: Colors;
   navigation: AnchorNavigation;
 }) {
-  const field = `chapter:${chapter.id}`;
+  const fields = searchFields.chapter(chapter.id);
   return (
     <View style={styles.chapter} onLayout={navigation.refresh}>
       <View style={styles.chapterHeader}>
         <Icon name={ICON_NAMES[chapter.icon]} size={14} color={colors.foreground} />
-        <SearchText field={`${field}:title`} accessibilityRole="header" style={[styles.chapterTitle, { color: colors.foreground }]}>{chapter.title}</SearchText>
+        <SearchText field={fields.title} accessibilityRole="header" style={[styles.chapterTitle, { color: colors.foreground }]}>{chapter.title}</SearchText>
       </View>
-      {chapter.blurb ? <SearchText field={`${field}:blurb`} style={[styles.meta, { color: colors.foregroundMuted }]}>{chapter.blurb}</SearchText> : null}
+      {chapter.blurb ? <SearchText field={fields.blurb} style={[styles.meta, { color: colors.foregroundMuted }]}>{chapter.blurb}</SearchText> : null}
       {chapter.stops.map((stop) => (
         <StopView
           key={stop.id}
@@ -318,7 +319,7 @@ function SkippedView({ document, colors }: { document: WalkthroughDocument; colo
       {document.routine.map((note, index) => (
         <View key={note.path} style={styles.routineRow}>
           <Text style={[styles.path, { color: colors.foreground }]}>{note.path}</Text>
-          <SearchText field={`uncovered:routine:${index}:note`} style={[styles.meta, { color: colors.foregroundMuted }]}>{note.note}</SearchText>
+          <SearchText field={searchFields.routineNote(index)} style={[styles.meta, { color: colors.foregroundMuted }]}>{note.note}</SearchText>
         </View>
       ))}
     </View>
@@ -344,7 +345,7 @@ function UncoveredView({ document, hunks, open, setOpen, colors }: {
         icon={open ? "ChevronDown" : "ChevronRight"}
         onPress={() => setOpen(!open)}
       />
-      {open && hunks.map((hunk) => <DocumentHunkView key={hunk.id} hunk={hunk} colors={colors} field={`uncovered:hunk:${hunk.id}`} />)}
+      {open && hunks.map((hunk) => <DocumentHunkView key={hunk.id} hunk={hunk} colors={colors} field={searchFields.uncoveredHunk(hunk.id)} />)}
       {open ? <SkippedView document={document} colors={colors} /> : null}
     </View>
   );
@@ -423,8 +424,8 @@ function DocumentView({
   return (
     <View {...navigation.rootProps} style={[styles.content, styles.document, compact && styles.contentCompact]}>
       <StalenessView document={document} staleness={staleness} staleStopIds={staleStopIds} colors={colors} />
-      <SearchText field="document:title" accessibilityRole="header" style={[styles.documentTitle, { color: colors.foreground }]}>{document.title}</SearchText>
-      {document.focus ? <SearchText field="document:focus" style={[styles.prose, { color: colors.foreground }]}>{document.focus}</SearchText> : null}
+      <SearchText field={searchFields.documentTitle} accessibilityRole="header" style={[styles.documentTitle, { color: colors.foreground }]}>{document.title}</SearchText>
+      {document.focus ? <SearchText field={searchFields.documentFocus} style={[styles.prose, { color: colors.foreground }]}>{document.focus}</SearchText> : null}
       {document.chapters.map((chapter) => (
         <ChapterView
           key={chapter.id}
@@ -451,7 +452,7 @@ function DocumentReader({ document, staleness, hunks, colors, compact, query, se
   const [selection, setSelection] = useState<WalkthroughMatch>();
   const [stopIds] = useState(() => document.chapters.flatMap((chapter) => chapter.stops.map((stop) => stop.id)));
   const navigation = useReadingNavigation(stopIds);
-  const { jumpTo, registerAnchor, refresh } = navigation;
+  const { jumpTo, registerSearchAnchor, refresh } = navigation;
   const outdatedHunks = useMemo(() => new Set(staleness?.outdatedHunkIds ?? staleness?.missingHunkIds), [staleness]);
   const uncoveredHunks = useMemo(() => staleness?.currentUncoveredHunks ?? [...new Set(document.uncoveredHunkIds)].flatMap((id) => {
     const hunk = hunks.get(id);
@@ -462,24 +463,25 @@ function DocumentReader({ document, staleness, hunks, colors, compact, query, se
     selection?.field === match.field && selection.start === match.start && selection.length === match.length,
   ));
   const match = matches[currentIndex];
-  const search = { match, highlight: colors, registerAnchor, refresh };
-  const { field, start, length, uncovered } = match ?? {};
+  const search = { match, highlight: colors, registerSearchAnchor, refresh };
+  const matchAnchor = match ? searchAnchorId(match) : null;
+  const inUncoveredSection = match?.uncovered ?? false;
 
-  const revealMatch = useCallback((field: string, uncovered: boolean) => {
+  const revealMatch = useCallback((anchor: string, uncovered: boolean) => {
     if (uncovered) setUncoveredOpen(true);
-    jumpTo(searchAnchorId(field));
+    jumpTo(anchor);
   }, [jumpTo]);
 
   useEffect(() => {
-    if (field) revealMatch(field, uncovered ?? false);
-  }, [field, length, query, revealMatch, start, uncovered]);
+    if (matchAnchor) revealMatch(matchAnchor, inUncoveredSection);
+  }, [matchAnchor, inUncoveredSection, query, revealMatch]);
 
   const moveMatch = (direction: number) => {
     if (!matches.length) return;
     const next = (currentIndex + direction + matches.length) % matches.length;
     const target = matches[next];
     setSelection(target);
-    if (next === currentIndex) revealMatch(target.field, target.uncovered);
+    if (next === currentIndex) revealMatch(searchAnchorId(target), target.uncovered);
   };
   const showContents = stopIds.length > 0;
   const sideBySide = width >= CONTENTS_MIN_PANEL_WIDTH;

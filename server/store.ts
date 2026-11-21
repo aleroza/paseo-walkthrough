@@ -32,7 +32,7 @@ export async function prepareDataDirectory(dir: string): Promise<void> {
   }
 }
 
-export async function writePrivateFile(path: string, contents: string, canWrite = () => true): Promise<void> {
+export async function writePrivateFile(path: string, contents: string): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
   const file = await open(temporary, "wx", 0o600);
   try {
@@ -41,7 +41,7 @@ export async function writePrivateFile(path: string, contents: string, canWrite 
     } finally {
       await file.close();
     }
-    if (canWrite()) await rename(temporary, path);
+    await rename(temporary, path);
   } finally {
     await rm(temporary, { force: true });
   }

@@ -1,22 +1,25 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import contribute from "../index.server";
 import { cancelRpc, diffRpc, generateRpc, statusRpc } from "../shared/contracts";
 import type { PaseoApi } from "../server/host-types";
 
 let homeRoot = "";
+const homeRoots: string[] = [];
 
-beforeAll(async () => {
+beforeEach(async () => {
   homeRoot = await mkdtemp(join(tmpdir(), "walkthrough-home-"));
+  homeRoots.push(homeRoot);
   vi.stubEnv("PASEO_HOME", join(homeRoot, "home"));
 });
 
 afterAll(async () => {
   vi.unstubAllEnvs();
-  await rm(homeRoot, { recursive: true, force: true });
+  await Promise.all(homeRoots.map((root) => rm(root, { recursive: true, force: true })));
 });
 
 async function createRepo(): Promise<string> {
@@ -224,7 +227,7 @@ interface JobStatusView {
   } | null;
 }
 
-const callStatus = async (handlers: Map<string, Handler>, paseo: PaseoApi, jobId: string): Promise<JobStatusView> =>
+const callStatus = async (handlers: Map<string, Handler>, paseo: PaseoApi, jobId: string | null): Promise<JobStatusView> =>
   (await handlerFor(handlers, statusRpc.name)({ workspaceId: "ws-1", jobId }, { paseo })) as JobStatusView;
 
 const waitFor = async (
@@ -325,6 +328,11 @@ describe("walkthrough cache", () => {
     fake.release(modelAnswer(["h1"]));
     const finished = await waitForTerminal(first.handlers, fake.paseo, generated.jobId);
     expect(finished.job?.state).toBe("done");
+    expect(statusRpc.output.parse(finished)).toMatchObject({
+      job: { request: { scope: "all", model: null, language: "en" } },
+      source: { scope: "all" },
+      documentMetadata: { jobId: generated.jobId, model: "test/model-1", language: "en" },
+    });
     await first.cleanup();
 
     const reopened = load();
@@ -332,6 +340,7 @@ describe("walkthrough cache", () => {
     const restored = (await restore({ workspaceId: "ws-1", jobId: null }, { paseo: fake.paseo })) as JobStatusView;
     expect(restored.document?.title).toBe("The change");
     expect(restored.staleness?.stale).toBe(false);
+    expect(statusRpc.output.parse(restored).documentMetadata).toEqual(statusRpc.output.parse(finished).documentMetadata);
     const other = (await restore({ workspaceId: "ws-2", jobId: null }, { paseo: fake.paseo })) as JobStatusView;
     expect(other.document).toBeNull();
 
@@ -374,6 +383,75 @@ describe("walkthrough cache", () => {
     await cleanup();
     await reopened.cleanup();
   });
+
+  it("opens a saved walkthrough without generation metadata", async () => {
+    const repo = await createRepo();
+    const workspaceId = "ws-legacy";
+    const key = createHash("sha256").update(JSON.stringify(workspaceId)).digest("hex");
+    const directory = join(homeRoot, "home", "plugin-data", "walkthrough", "cache", "workspaces");
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, `${key}.json`), JSON.stringify({
+      key: "legacy",
+      source: { scope: "all" },
+      diff: { files: [], hunkCount: 0, fileCount: 0, generatedPaths: [], repository: true },
+      document: { title: "Saved walkthrough", focus: "", chapters: [], routine: [], uncoveredHunkIds: [], droppedAnchors: 0 },
+    }));
+    const { handlers, cleanup } = load();
+    onTestFinished(cleanup);
+    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
+    const status = statusRpc.output.parse(await handlerFor(handlers, statusRpc.name)({ workspaceId, jobId: null }, { paseo: fake.paseo }));
+    expect(status.document?.title).toBe("Saved walkthrough");
+    expect(status.source).toEqual({ scope: "all" });
+    expect(status.documentMetadata).toBeUndefined();
+  });
+
+  it.each(["failed", "cancelled"] as const)("keeps the prior result after a %s replacement", async (outcome) => {
+    const repo = await createRepo();
+    const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    const original = load();
+    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
+    const context = { paseo: fake.paseo };
+    const first = generateRpc.output.parse(await handlerFor(original.handlers, generateRpc.name)(
+      { workspaceId: "ws-1", scope: "commit", commit: commit.toUpperCase(), model: "test/model-1", language: "de" }, context,
+    ));
+    fake.release(modelAnswer(["h1"], "Earlier walkthrough"));
+    const previous = statusRpc.output.parse(await waitForTerminal(original.handlers, fake.paseo, first.jobId));
+    expect(previous.job).toMatchObject({ state: "done", request: { scope: "commit", commit, model: "test/model-1", language: "de" } });
+    expect(previous.source).toEqual({ scope: "commit", commit });
+    await original.cleanup();
+
+    const { handlers, cleanup } = load();
+    onTestFinished(cleanup);
+    const replacement = generateRpc.output.parse(await handlerFor(handlers, generateRpc.name)(
+      { workspaceId: "ws-1", scope: "unstaged", language: "fr" }, context,
+    ));
+    await waitUntil(() => fake.promptCount() === 2);
+    const retained = {
+      document: previous.document,
+      source: previous.source,
+      hunks: previous.hunks,
+      documentMetadata: { jobId: first.jobId, model: "test/model-1", language: "de" },
+    };
+    expect(statusRpc.output.parse(await callStatus(handlers, fake.paseo, replacement.jobId))).toMatchObject({
+      ...retained,
+      job: { id: replacement.jobId, state: "asking", request: { scope: "unstaged", model: null, language: "fr" } },
+    });
+
+    if (outcome === "cancelled") {
+      expect(await handlerFor(handlers, cancelRpc.name)({ workspaceId: "ws-1", jobId: replacement.jobId }, context))
+        .toEqual({ cancelled: true, error: null });
+      fake.release(modelAnswer(["h1"], "Late response"));
+    } else {
+      fake.release({ error: "The replacement model failed" });
+    }
+    const terminal = statusRpc.output.parse(await waitForTerminal(handlers, fake.paseo, replacement.jobId));
+    expect(terminal).toMatchObject({ ...retained, job: { state: outcome } });
+
+    const reopened = load();
+    onTestFinished(reopened.cleanup);
+    expect(statusRpc.output.parse(await callStatus(reopened.handlers, fake.paseo, null))).toMatchObject(retained);
+  });
 });
 
 describe("walkthrough.generate", () => {
@@ -410,7 +488,8 @@ describe("walkthrough.generate", () => {
     await waitUntil(() => fake.promptCount() === 1);
     fake.release({ error: "Invalid OpenCode structured output: data/chapters must be array" });
 
-    const secondTurn = await waitFor(handlers, fake.paseo, generated.jobId, (status) => fake.promptCount() === 2 || status.job?.state === "failed");
+    const secondTurn = await waitFor(handlers, fake.paseo, generated.jobId, (status) =>
+      (fake.promptCount() === 2 && status.job?.stages.includes("retrying") === true) || status.job?.state === "failed");
     expect(secondTurn.job?.stages).toContain("retrying");
     expect(fake.creations[1]?.prompt).toContain("data/chapters must be array");
     expect(fake.creations[1]?.outputSchema).toEqual(fake.creations[0]?.outputSchema);

@@ -113,6 +113,19 @@ export type WalkthroughSource = z.infer<typeof walkthroughSourceSchema>;
 export const sourceRequestSchema = walkthroughSourceSchema.extend({ workspaceId: z.string() });
 export type SourceRequest = z.infer<typeof sourceRequestSchema>;
 
+const walkthroughRequestSchema = walkthroughSourceSchema.extend({
+  model: z.string().nullable(),
+  language: z.enum(LANGUAGES),
+});
+export type WalkthroughRequest = z.infer<typeof walkthroughRequestSchema>;
+
+export const documentMetadataSchema = z.object({
+  jobId: z.string(),
+  model: z.string(),
+  language: z.enum(LANGUAGES),
+}).partial();
+export type DocumentMetadata = z.infer<typeof documentMetadataSchema>;
+
 export const jobSchema = z.object({
   id: z.string(),
   workspaceId: z.string(),
@@ -121,6 +134,7 @@ export const jobSchema = z.object({
   stages: z.array(z.enum(JOB_STATES)),
   error: z.string().nullable(),
   startedAt: z.number(),
+  request: walkthroughRequestSchema.optional(),
 });
 export type WalkthroughJob = z.infer<typeof jobSchema>;
 
@@ -130,6 +144,7 @@ export const jobStatusSchema = z.object({
   staleness: stalenessSchema.nullable(),
   hunks: z.array(hunkSchema).default([]),
   source: walkthroughSourceSchema.optional(),
+  documentMetadata: documentMetadataSchema.optional(),
 });
 export type JobStatus = z.infer<typeof jobStatusSchema>;
 

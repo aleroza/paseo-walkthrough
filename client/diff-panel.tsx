@@ -149,12 +149,13 @@ function HunkView({ hunk, colors }: { hunk: Hunk; colors: Colors }) {
   );
 }
 
-function DocumentHunkView({ hunk, colors }: { hunk: Hunk; colors: Colors }) {
+function DocumentHunkView({ hunk, previous = false, colors }: { hunk: Hunk; previous?: boolean; colors: Colors }) {
   const section = sectionLabel(hunk.section);
   return (
     <View style={[styles.documentHunk, { backgroundColor: colors.surface1, borderColor: colors.border }]}>
       <Text style={[styles.hunkPath, { backgroundColor: colors.surface2, color: colors.foreground }]}>
         {section ? `${hunk.path} (${section})` : hunk.path}
+        {previous ? " · Previous version" : null}
       </Text>
       <View style={styles.anchoredPatch}>
         <HunkView hunk={hunk} colors={colors} />
@@ -191,7 +192,14 @@ function FileView({ file, generated, colors }: { file: DiffFile; generated: bool
 type ReadingNavigation = ReturnType<typeof useReadingNavigation>;
 type AnchorNavigation = Pick<ReadingNavigation, "registerAnchor" | "refresh">;
 
-function StopView({ stop, stale, hunks, colors, navigation }: { stop: Stop; stale: boolean; hunks: Map<string, Hunk>; colors: Colors; navigation: AnchorNavigation }) {
+function StopView({ stop, stale, outdatedHunks, hunks, colors, navigation }: {
+  stop: Stop;
+  stale: boolean;
+  outdatedHunks: Set<string>;
+  hunks: Map<string, Hunk>;
+  colors: Colors;
+  navigation: AnchorNavigation;
+}) {
   const { registerAnchor, refresh } = navigation;
   const heading = useCallback((view: ComponentRef<typeof View> | null) => {
     registerAnchor(stopAnchorId(stop.id), view);
@@ -221,13 +229,20 @@ function StopView({ stop, stale, hunks, colors, navigation }: { stop: Stop; stal
       ))}
       {stop.hunkIds.map((id) => {
         const hunk = hunks.get(id);
-        return hunk ? <DocumentHunkView key={id} hunk={hunk} colors={colors} /> : null;
+        return hunk ? <DocumentHunkView key={id} hunk={hunk} previous={outdatedHunks.has(id)} colors={colors} /> : null;
       })}
     </View>
   );
 }
 
-function ChapterView({ chapter, staleStops, hunks, colors, navigation }: { chapter: Chapter; staleStops: Set<string>; hunks: Map<string, Hunk>; colors: Colors; navigation: AnchorNavigation }) {
+function ChapterView({ chapter, staleStops, outdatedHunks, hunks, colors, navigation }: {
+  chapter: Chapter;
+  staleStops: Set<string>;
+  outdatedHunks: Set<string>;
+  hunks: Map<string, Hunk>;
+  colors: Colors;
+  navigation: AnchorNavigation;
+}) {
   return (
     <View style={styles.chapter} onLayout={navigation.refresh}>
       <View style={styles.chapterHeader}>
@@ -236,7 +251,15 @@ function ChapterView({ chapter, staleStops, hunks, colors, navigation }: { chapt
       </View>
       {chapter.blurb ? <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{chapter.blurb}</Text> : null}
       {chapter.stops.map((stop) => (
-        <StopView key={stop.id} stop={stop} stale={staleStops.has(stop.id)} hunks={hunks} colors={colors} navigation={navigation} />
+        <StopView
+          key={stop.id}
+          stop={stop}
+          stale={staleStops.has(stop.id)}
+          outdatedHunks={outdatedHunks}
+          hunks={hunks}
+          colors={colors}
+          navigation={navigation}
+        />
       ))}
     </View>
   );
@@ -302,9 +325,14 @@ function SkippedView({ document, colors }: { document: WalkthroughDocument; colo
 }
 
 /** The hunks no stop covered: the reader still has to read them. */
-function UncoveredView({ document, hunks, colors }: { document: WalkthroughDocument; hunks: Map<string, Hunk>; colors: Colors }) {
-  const [open, setOpen] = useState(false);
-  const count = document.uncoveredHunkIds.length;
+function UncoveredView({ document, hunks, open, setOpen, colors }: {
+  document: WalkthroughDocument;
+  hunks: Hunk[];
+  open: boolean;
+  setOpen: (open: boolean) => void;
+  colors: Colors;
+}) {
+  const count = hunks.length;
   if (count === 0 && document.routine.length === 0) return null;
   return (
     <View style={styles.contents}>
@@ -315,10 +343,7 @@ function UncoveredView({ document, hunks, colors }: { document: WalkthroughDocum
         icon={open ? "ChevronDown" : "ChevronRight"}
         onPress={() => setOpen(!open)}
       />
-      {open && document.uncoveredHunkIds.map((id) => {
-        const hunk = hunks.get(id);
-        return hunk ? <DocumentHunkView key={id} hunk={hunk} colors={colors} /> : null;
-      })}
+      {open && hunks.map((hunk) => <DocumentHunkView key={hunk.id} hunk={hunk} colors={colors} />)}
       {open ? <SkippedView document={document} colors={colors} /> : null}
     </View>
   );
@@ -367,6 +392,14 @@ function StalenessView({
   );
 }
 
+type DocumentReaderProps = {
+  document: WalkthroughDocument;
+  staleness: Staleness | null;
+  hunks: Map<string, Hunk>;
+  colors: Colors;
+  compact: boolean;
+};
+
 function DocumentView({
   document,
   staleness,
@@ -374,13 +407,16 @@ function DocumentView({
   colors,
   compact,
   navigation,
-}: {
-  document: WalkthroughDocument;
-  staleness: Staleness | null;
-  hunks: Map<string, Hunk>;
-  colors: Colors;
-  compact: boolean;
+  outdatedHunks,
+  uncoveredHunks,
+  uncoveredOpen,
+  setUncoveredOpen,
+}: DocumentReaderProps & {
   navigation: ReadingNavigation;
+  outdatedHunks: Set<string>;
+  uncoveredHunks: Hunk[];
+  uncoveredOpen: boolean;
+  setUncoveredOpen: (open: boolean) => void;
 }) {
   const staleStopIds = new Set(staleness?.staleStopIds);
   return (
@@ -389,18 +425,32 @@ function DocumentView({
       <Text accessibilityRole="header" style={[styles.documentTitle, { color: colors.foreground }]}>{document.title}</Text>
       {document.focus ? <Text style={[styles.prose, { color: colors.foreground }]}>{document.focus}</Text> : null}
       {document.chapters.map((chapter) => (
-        <ChapterView key={chapter.id} chapter={chapter} staleStops={staleStopIds} hunks={hunks} colors={colors} navigation={navigation} />
+        <ChapterView
+          key={chapter.id}
+          chapter={chapter}
+          staleStops={staleStopIds}
+          outdatedHunks={outdatedHunks}
+          hunks={hunks}
+          colors={colors}
+          navigation={navigation}
+        />
       ))}
-      <UncoveredView document={document} hunks={hunks} colors={colors} />
+      <UncoveredView document={document} hunks={uncoveredHunks} open={uncoveredOpen} setOpen={setUncoveredOpen} colors={colors} />
     </View>
   );
 }
 
-function DocumentReader({ document, staleness, hunks, colors, compact }: Omit<Parameters<typeof DocumentView>[0], "navigation">) {
+function DocumentReader({ document, staleness, hunks, colors, compact }: DocumentReaderProps) {
   const [width, setWidth] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [uncoveredOpen, setUncoveredOpen] = useState(false);
   const [stopIds] = useState(() => document.chapters.flatMap((chapter) => chapter.stops.map((stop) => stop.id)));
   const navigation = useReadingNavigation(stopIds);
+  const outdatedHunks = new Set(staleness?.outdatedHunkIds ?? staleness?.missingHunkIds);
+  const uncoveredHunks = staleness?.currentUncoveredHunks ?? [...new Set(document.uncoveredHunkIds)].flatMap((id) => {
+    const hunk = hunks.get(id);
+    return hunk && !outdatedHunks.has(id) ? [hunk] : [];
+  });
   const showContents = stopIds.length > 0;
   const sideBySide = width >= CONTENTS_MIN_PANEL_WIDTH;
   const contents = showContents ? (
@@ -429,7 +479,18 @@ function DocumentReader({ document, staleness, hunks, colors, compact }: Omit<Pa
           </View>
         ) : null}
         <ScrollView {...navigation.scrollProps} style={styles.readingScroll}>
-          <DocumentView document={document} staleness={staleness} hunks={hunks} colors={colors} compact={compact} navigation={navigation} />
+          <DocumentView
+            document={document}
+            staleness={staleness}
+            hunks={hunks}
+            colors={colors}
+            compact={compact}
+            navigation={navigation}
+            outdatedHunks={outdatedHunks}
+            uncoveredHunks={uncoveredHunks}
+            uncoveredOpen={uncoveredOpen}
+            setUncoveredOpen={setUncoveredOpen}
+          />
         </ScrollView>
       </View>
       <Modal title="Jump to stop" open={showContents && !sideBySide && menuOpen} onOpenChange={setMenuOpen}>

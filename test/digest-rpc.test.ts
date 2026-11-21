@@ -265,9 +265,11 @@ describe("the digest the model reads", () => {
     expect(after.hunks).toEqual([staged, unstaged]);
     expect(after.staleness).toMatchObject({
       stale: true,
-      staleStopIds: [],
+      staleStopIds: ["stop-1-1"],
       missingHunkIds: [unstaged.id],
       uncoveredHunkIds: [],
+      outdatedHunkIds: [unstaged.id],
+      currentUncoveredHunks: [],
     });
   });
 
@@ -307,7 +309,7 @@ describe("the digest the model reads", () => {
     await waitFor(handlers, fake.paseo, generated.jobId, (status) => status.job?.state === "asking");
     const prompt = await waitForPrompt(fake);
     expect(prompt).not.toContain("diff --git");
-    expect(prompt).not.toContain("index ");
+    expect(prompt).not.toMatch(/^index /m);
     expect(prompt).not.toContain("--- a/app.ts");
     expect(prompt).toContain("Change digest:");
     expect(prompt).toContain("app.ts");

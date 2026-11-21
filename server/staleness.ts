@@ -40,40 +40,64 @@ function overlaps(left: HunkSnapshot, right: HunkSnapshot): boolean {
 const locationOf = ({ hunk: { id, path, section, header } }: HunkSnapshot): HunkLocation => ({ id, path, section, header });
 
 function compareStaleness(document: WalkthroughDocument, before: StalenessSnapshot, after: StalenessSnapshot): Staleness {
-  const edited = new Set<string>();
+  const outdatedHunkIds = new Set<string>();
   const missingHunks: HunkLocation[] = [];
   const uncoveredHunks: HunkLocation[] = [];
+  const currentUncoveredHunks = new Map<string, Hunk>();
+  for (const entries of after.values()) {
+    for (const { hunk } of entries) currentUncoveredHunks.set(hunk.id, hunk);
+  }
+
+  // Older All caches have one combined patch per path. An exact match in one current section can still anchor the stop.
+  const legacyMatches = new Map<string, string>();
+  const liveSectionsByLegacyKey = new Map<string, HunkSnapshot[]>();
+  for (const [key, oldHunks] of before) {
+    if (!key.startsWith("all:")) continue;
+    const path = key.slice("all:".length);
+    const liveHunks = [...(after.get(`staged:${path}`) ?? []), ...(after.get(`unstaged:${path}`) ?? [])];
+    for (const { hunk: old } of oldHunks) {
+      const identical = liveHunks.filter(({ hunk }) => hunk.patch === old.patch);
+      if (identical.length === 1) legacyMatches.set(old.id, identical[0].hunk.id);
+    }
+    liveSectionsByLegacyKey.set(key, liveHunks);
+  }
+  const matchedCurrentIds = new Set(legacyMatches.values());
 
   for (const key of new Set([...before.keys(), ...after.keys()])) {
     const oldHunks = before.get(key) ?? [];
     const newHunks = after.get(key) ?? [];
     const oldIds = new Set(oldHunks.map(({ hunk }) => hunk.id));
     const newIds = new Set(newHunks.map(({ hunk }) => hunk.id));
-    const gained = newHunks.filter(({ hunk }) => !oldIds.has(hunk.id));
+    const gained = newHunks.filter(({ hunk }) => !oldIds.has(hunk.id) && !matchedCurrentIds.has(hunk.id));
     uncoveredHunks.push(...gained.map(locationOf));
 
+    const replacements = liveSectionsByLegacyKey.get(key) ?? gained;
     for (const hunk of oldHunks) {
-      if (newIds.has(hunk.hunk.id)) continue;
-      if (gained.some((replacement) => overlaps(hunk, replacement))) {
-        edited.add(hunk.hunk.id);
-      } else {
+      if (newIds.has(hunk.hunk.id) || legacyMatches.has(hunk.hunk.id)) continue;
+      outdatedHunkIds.add(hunk.hunk.id);
+      if (!replacements.some((replacement) => overlaps(hunk, replacement))) {
         missingHunks.push(locationOf(hunk));
       }
     }
   }
 
-  const staleStopIds = document.chapters
-    .flatMap((chapter) => chapter.stops)
-    .filter((stop) => stop.hunkIds.some((id) => edited.has(id)))
+  const stops = document.chapters.flatMap((chapter) => chapter.stops);
+  const staleStopIds = stops
+    .filter((stop) => stop.hunkIds.some((id) => outdatedHunkIds.has(id)))
     .map((stop) => stop.id);
+  for (const stop of stops) {
+    for (const id of stop.hunkIds) currentUncoveredHunks.delete(legacyMatches.get(id) ?? id);
+  }
 
   return {
-    stale: edited.size > 0 || missingHunks.length > 0 || uncoveredHunks.length > 0,
+    stale: outdatedHunkIds.size > 0 || uncoveredHunks.length > 0,
     staleStopIds,
     uncoveredHunkIds: uncoveredHunks.map((hunk) => hunk.id),
     missingHunkIds: missingHunks.map((hunk) => hunk.id),
     uncoveredHunks,
     missingHunks,
+    outdatedHunkIds: [...outdatedHunkIds],
+    currentUncoveredHunks: [...currentUncoveredHunks.values()],
   };
 }
 

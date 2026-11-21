@@ -275,14 +275,18 @@ const modelAnswer = (aliases: string[], title = "The change") =>
 describe("walkthrough cache", () => {
   it("restores a cached All stop with a hunk saved before sections were recorded", async () => {
     const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
     const workspaceId = "ws-legacy";
     const name = createHash("sha256").update(JSON.stringify(workspaceId)).digest("hex");
     const directory = join(homeRoot, "home", "plugin-data", "walkthrough", "cache", "workspaces");
-    const hunk = {
-      id: "all:app.ts:1a2b3c4d", path: "app.ts", header: "@@ -1 +1 @@",
-      oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, added: 1, deleted: 1,
-      patch: "@@ -1 +1 @@\n-const a = 1;\n+const a = 2;\n",
-    };
+    const { handlers, cleanup } = load();
+    onTestFinished(cleanup);
+    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
+    const { diff } = diffRpc.output.parse(
+      await handlerFor(handlers, diffRpc.name)({ workspaceId, scope: "all" }, { paseo: fake.paseo }),
+    );
+    const { section: _section, ...liveHunk } = diff!.files[0].hunks[0];
+    const hunk = { ...liveHunk, id: liveHunk.id.replace(/^unstaged:/, "all:") };
     await mkdir(directory, { recursive: true });
     await writeFile(join(directory, `${name}.json`), JSON.stringify({
       key: "legacy",
@@ -299,14 +303,17 @@ describe("walkthrough cache", () => {
       },
     }));
 
-    const { handlers, cleanup } = load();
-    onTestFinished(cleanup);
-    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
     const restored = statusRpc.output.parse(
       await handlerFor(handlers, statusRpc.name)({ workspaceId, jobId: null }, { paseo: fake.paseo }),
     );
     expect(restored.document?.chapters[0].stops[0].hunkIds).toEqual([hunk.id]);
     expect(restored.hunks).toEqual([hunk]);
+    expect(restored.staleness).toMatchObject({
+      stale: false,
+      staleStopIds: [],
+      outdatedHunkIds: [],
+      currentUncoveredHunks: [],
+    });
   });
 
   it("restores the workspace's document on reload and fulfills the same request without asking the model again", async () => {

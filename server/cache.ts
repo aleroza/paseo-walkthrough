@@ -27,7 +27,7 @@ export function identifyChange(
   diff: Diff,
 ) {
   const files = diff.files.map((file) =>
-    hash([file.path, file.oldPath, file.status, file.binary, file.hunks.map((hunk) => hash([hunk.id, hunk.patch])).sort()]),
+    hash([file.path, file.oldPath, file.status, file.binary, file.hunks.map((hunk) => hash([hunk.id, hunk.patch])).sort(), ...(file.section ? [file.section] : [])]),
   );
   return {
     bucket: hash([root, source.scope]),

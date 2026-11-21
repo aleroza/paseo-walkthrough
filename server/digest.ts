@@ -47,11 +47,11 @@ export function buildDigest(files: DiffFile[], scope: string): BuiltDigest {
   let counter = 0;
 
   const digestFiles: DigestFile[] = [];
-  const generatedPaths: string[] = [];
+  const generatedPaths = new Set<string>();
 
   for (const file of files) {
     if (isGeneratedArtifact(file.path)) {
-      generatedPaths.push(file.path);
+      generatedPaths.add(file.path);
       continue;
     }
 
@@ -75,7 +75,7 @@ export function buildDigest(files: DiffFile[], scope: string): BuiltDigest {
     };
     if (file.oldPath) entry.oldPath = file.oldPath;
     if (file.binary) entry.binary = true;
-    if (scope !== "branch") entry.scope = scope;
+    if (scope !== "branch") entry.scope = file.section ?? scope;
     digestFiles.push(entry);
   }
 
@@ -83,7 +83,7 @@ export function buildDigest(files: DiffFile[], scope: string): BuiltDigest {
     digest: { files: digestFiles },
     idByAlias,
     hunkCount: counter,
-    fileCount: digestFiles.length,
-    generatedPaths,
+    fileCount: new Set(digestFiles.map((file) => file.path)).size,
+    generatedPaths: [...generatedPaths],
   };
 }

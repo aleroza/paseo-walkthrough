@@ -10,6 +10,7 @@ import type { ChapterIcon, StopImportance, WalkthroughJobState, WalkthroughScope
 import { DEFAULT_PANEL_STATE, LANGUAGES, LANGUAGE_NAMES } from "../shared/constants";
 import type { Chapter, CommitOption, Diff, DiffFile, Hunk, JobStatus, ModelOption, PanelState, Staleness, Stop, WalkthroughDocument } from "../shared/types";
 import { panelStateSchema } from "../shared/types";
+import { DiffSections, sectionLabel } from "./diff-sections";
 
 const POLL_MS = 4_000;
 const STATUS_POLL_MS = 1_500;
@@ -147,9 +148,12 @@ function HunkView({ hunk, colors }: { hunk: Hunk; colors: Colors }) {
 }
 
 function DocumentHunkView({ hunk, colors }: { hunk: Hunk; colors: Colors }) {
+  const section = sectionLabel(hunk.section);
   return (
     <View style={[styles.documentHunk, { backgroundColor: colors.surface1, borderColor: colors.border }]}>
-      <Text style={[styles.hunkPath, { backgroundColor: colors.surface2, color: colors.foreground }]}>{hunk.path}</Text>
+      <Text style={[styles.hunkPath, { backgroundColor: colors.surface2, color: colors.foreground }]}>
+        {section ? `${hunk.path} (${section})` : hunk.path}
+      </Text>
       <View style={styles.anchoredPatch}>
         <HunkView hunk={hunk} colors={colors} />
       </View>
@@ -323,9 +327,10 @@ function StalenessView({
       ] as const).map(([label, locations]) => locations?.length ? (
         <View key={label} style={styles.routineRow}>
           <Text style={[styles.chapterTitle, { color: colors.foreground }]}>{label}</Text>
-          {locations.map(({ id, path, header }) => (
-            <Text key={id} style={[styles.meta, { color: colors.foreground }]}>{path} {header}</Text>
-          ))}
+          {locations.map(({ id, path, section, header }) => {
+            const label = sectionLabel(section);
+            return <Text key={id} style={[styles.meta, { color: colors.foreground }]}>{label ? `${path} (${label})` : path} {header}</Text>;
+          })}
         </View>
       ) : null)}
     </View>
@@ -381,14 +386,19 @@ function DiffSummary({ diff, base, error, empty, colors }: DiffSummaryProps) {
   );
 }
 
-function SourceDiff(props: DiffSummaryProps) {
+function SourceDiff({ scope, ...props }: DiffSummaryProps & { scope: WalkthroughScope }) {
   const { diff, colors } = props;
   return (
     <>
       <DiffSummary {...props} />
-      {diff?.files.map((file) => (
-        <FileView key={file.path} file={file} generated={diff.generatedPaths.includes(file.path)} colors={colors} />
-      ))}
+      {diff ? (
+        <DiffSections
+          files={diff.files}
+          showSectionHeaders={scope === "all"}
+          colors={colors}
+          renderFile={(file) => <FileView file={file} generated={diff.generatedPaths.includes(file.path)} colors={colors} />}
+        />
+      ) : null}
     </>
   );
 }
@@ -814,7 +824,7 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
         <Modal title={`Source diff · ${sourceLabel}`} open={sourceDiffOpen} onOpenChange={setSourceDiffOpen}>
           {sourceDiffOpen ? (
             <Modal.Content contentContainerStyle={[styles.content, layout.compact && styles.contentCompact]}>
-              <SourceDiff {...diffSummary} />
+              <SourceDiff {...diffSummary} scope={scope} />
             </Modal.Content>
           ) : null}
         </Modal>

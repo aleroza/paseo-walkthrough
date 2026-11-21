@@ -129,7 +129,7 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
       if (signal.aborted) return;
 
       const digest = buildDigest(diff.files, scope);
-      if (digest.hunkCount === 0) throw new Error(emptyChangeMessage(diff.files.length, digest.generatedPaths.length));
+      if (digest.hunkCount === 0) throw new Error(emptyChangeMessage(diff.fileCount, digest.generatedPaths.length));
       const provider = await resolveModel(paseo, model);
       // A new job may start while a successful predecessor is still saving its result.
       await job.persistence;

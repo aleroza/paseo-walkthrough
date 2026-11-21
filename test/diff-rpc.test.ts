@@ -103,11 +103,7 @@ async function callDiff(directory: string, input: Record<string, unknown> = {}) 
   const { handlers } = load();
   const handler = handlers.get(diffRpc.name);
   if (!handler) throw new Error(`no handler registered for ${diffRpc.name}`);
-  return (await handler({ workspaceId: "ws-1", scope: "all", ...input }, { paseo: fakePaseo(directory) })) as {
-    diff: { files: { path: string; status: string; hunks: { header: string; added: number; deleted: number; patch: string }[] }[]; hunkCount: number; fileCount: number; repository: boolean } | null;
-    error: string | null;
-    base: string | null;
-  };
+  return diffRpc.output.parse(await handler({ workspaceId: "ws-1", scope: "all", ...input }, { paseo: fakePaseo(directory) }));
 }
 
 async function listTree(dir: string, prefix = ""): Promise<string[]> {
@@ -158,6 +154,34 @@ describe("walkthrough.commits", () => {
 });
 
 describe("walkthrough.diff", () => {
+  it("shows both sides of a staged edit reversed in the working tree", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
+    await git(repo, ["add", "app.ts"]);
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 2;\nconst c = 3;\n");
+
+    const [all, staged, unstaged] = await Promise.all([
+      callDiff(repo),
+      callDiff(repo, { scope: "staged" }),
+      callDiff(repo, { scope: "unstaged" }),
+    ]);
+
+    expect(all.error).toBeNull();
+    expect(all.diff?.fileCount).toBe(1);
+    expect(all.diff?.hunkCount).toBe(2);
+    expect(all.diff?.files.map(({ path, section }) => [path, section])).toEqual([
+      ["app.ts", "staged"],
+      ["app.ts", "unstaged"],
+    ]);
+    const [first, second] = all.diff!.files.map(({ hunks }) => hunks[0]);
+    expect(first).toEqual(staged.diff?.files[0].hunks[0]);
+    expect(second).toEqual(unstaged.diff?.files[0].hunks[0]);
+    expect(first.header).toBe(second.header);
+    expect(first.id).not.toBe(second.id);
+    expect(first.patch).toContain("-const b = 2;\n+const b = 22;");
+    expect(second.patch).toContain("-const b = 22;\n+const b = 2;");
+  });
+
   it("collects the changed files and their hunks from a git repository", async () => {
     const repo = await createRepo();
     await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");
@@ -180,7 +204,9 @@ describe("walkthrough.diff", () => {
     expect(app?.hunks[0].patch).toContain("+const b = 22;");
 
     const created = result.diff?.files.find((file) => file.path === "new.ts");
+    expect(created?.section).toBe("unstaged");
     expect(created?.status).toBe("added");
+    expect(created?.hunks[0].section).toBe("unstaged");
     expect(created?.hunks[0].added).toBe(2);
     expect(created?.hunks[0].deleted).toBe(0);
   });
@@ -244,7 +270,7 @@ describe("walkthrough.diff", () => {
     expect(result.error).toMatch(/index file/i);
   });
 
-  it("uses the working files before the first commit", async () => {
+  it("shows the index, the working files and untracked files before the first commit", async () => {
     const repo = await mkdtemp(join(tmpdir(), "walkthrough-unborn-"));
     onTestFinished(() => rm(repo, { recursive: true, force: true }));
     await git(repo, ["init", "-q", "-b", "main", "."]);
@@ -258,8 +284,16 @@ describe("walkthrough.diff", () => {
     const result = await callDiff(repo);
 
     expect(result.error).toBeNull();
-    expect(result.diff?.files.map(({ path }) => path)).toEqual(["app.ts", "new.ts"]);
-    expect(result.diff?.files[0].hunks[0].patch).toContain("+working content");
+    expect(result.diff?.files.map(({ path, section, status }) => [path, section, status])).toEqual([
+      ["app.ts", "staged", "added"],
+      ["app.ts", "unstaged", "modified"],
+      ["new.ts", "unstaged", "added"],
+      ["removed.ts", "staged", "added"],
+      ["removed.ts", "unstaged", "deleted"],
+    ]);
+    expect(result.diff?.files[0].hunks[0].patch).toContain("+staged content");
+    expect(result.diff?.files[1].hunks[0].patch).toContain("-staged content\n+working content");
+    expect(result.diff?.files[2].hunks[0].patch).toContain("+untracked content");
   });
 
   it("honors standard patch paths even when the repo customizes its prefixes", async () => {

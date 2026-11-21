@@ -4,9 +4,9 @@
 
 **Blocked by:** 01 (Use a compact reading layout in Explorer).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] The contents list groups stops by chapter. Selecting a stop brings its heading into view.
-- [ ] Scrolling updates the active stop. A stop becomes visited when the reviewer reaches it, and visited state resets when a new document replaces the old one.
-- [ ] A narrow Explorer uses a jump menu. A wide Explorer shows the same contents list alongside the document.
-- [ ] Jumps land at the intended stop after nearby sections expand or collapse.
+- [x] The contents list groups stops by chapter. Selecting a stop brings its heading into view.
+- [x] Scrolling updates the active stop. A stop becomes visited when the reviewer reaches it, and visited state resets when a new document replaces the old one.
+- [x] A narrow Explorer uses a jump menu. A wide Explorer shows the same contents list alongside the document.
+- [x] Jumps land at the intended stop after nearby sections expand or collapse.

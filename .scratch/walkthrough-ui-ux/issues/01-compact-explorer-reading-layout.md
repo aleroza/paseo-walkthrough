@@ -4,10 +4,10 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] The initial view offers the source picker, the existing commit dropdown for commit scope, and Generate.
-- [ ] With a document open, the toolbar makes the source and generation actions accessible. Model and language are available in an options menu.
-- [ ] Each stop shows its explanation, observations, and anchored hunks together in reading order.
-- [ ] The complete source diff opens through a separate action. The Not covered section is collapsed by default and expands in place.
-- [ ] The layout is usable in narrow and wide Explorer panels, including keyboard navigation and the host theme.
+- [x] The initial view offers the source picker, the existing commit dropdown for commit scope, and Generate.
+- [x] With a document open, the toolbar makes the source and generation actions accessible. Model and language are available in an options menu.
+- [x] Each stop shows its explanation, observations, and anchored hunks together in reading order.
+- [x] The complete source diff opens through a separate action. The Not covered section is collapsed by default and expands in place.
+- [x] The layout is usable in narrow and wide Explorer panels, including keyboard navigation and the host theme.

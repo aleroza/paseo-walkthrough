@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] Check the supported SDK surface for a composer handoff from an Explorer plugin panel.
 - [x] On a live Paseo host, verify whether the handoff can carry the file, line, and diff source or record the missing capability and how it was verified.

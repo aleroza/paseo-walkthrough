@@ -12,6 +12,7 @@ import type { Chapter, CommitOption, Diff, DiffFile, Hunk, JobStatus, ModelOptio
 import { panelStateSchema } from "../shared/types";
 import { stopAnchorId, useReadingNavigation } from "./reading-navigation";
 import { DiffSections, sectionLabel } from "./diff-sections";
+import { findWalkthroughMatches, hunkBodyLines, searchAnchorId, SearchText, WalkthroughSearch, type WalkthroughMatch } from "./walkthrough-search";
 
 const POLL_MS = 4_000;
 const STATUS_POLL_MS = 1_500;
@@ -134,22 +135,20 @@ function ToolbarButton({
   );
 }
 
-function HunkView({ hunk, colors }: { hunk: Hunk; colors: Colors }) {
-  const body = hunk.patch.split("\n").slice(1);
-  if (body.length > 0 && body[body.length - 1] === "") body.pop();
+function HunkView({ hunk, colors, field }: { hunk: Hunk; colors: Colors; field?: string }) {
   return (
     <View style={styles.hunk}>
-      <Text style={[styles.hunkHeader, { color: colors.foregroundMuted }]}>{hunk.header}</Text>
-      {body.map((line, index) => (
-        <Text key={index} selectable style={[styles.code, { color: lineColor(colors, line) }]}>
+      <SearchText field={field && `${field}:header`} style={[styles.hunkHeader, { color: colors.foregroundMuted }]}>{hunk.header}</SearchText>
+      {hunkBodyLines(hunk).map((line, index) => (
+        <SearchText key={index} field={field && `${field}:line:${index}`} selectable style={[styles.code, { color: lineColor(colors, line) }]}>
           {line.length > 0 ? line : " "}
-        </Text>
+        </SearchText>
       ))}
     </View>
   );
 }
 
-function DocumentHunkView({ hunk, previous = false, colors }: { hunk: Hunk; previous?: boolean; colors: Colors }) {
+function DocumentHunkView({ hunk, previous = false, colors, field }: { hunk: Hunk; previous?: boolean; colors: Colors; field: string }) {
   const section = sectionLabel(hunk.section);
   return (
     <View style={[styles.documentHunk, { backgroundColor: colors.surface1, borderColor: colors.border }]}>
@@ -158,7 +157,7 @@ function DocumentHunkView({ hunk, previous = false, colors }: { hunk: Hunk; prev
         {previous ? " · Previous version" : null}
       </Text>
       <View style={styles.anchoredPatch}>
-        <HunkView hunk={hunk} colors={colors} />
+        <HunkView hunk={hunk} colors={colors} field={field} />
       </View>
     </View>
   );
@@ -201,6 +200,7 @@ function StopView({ stop, stale, outdatedHunks, hunks, colors, navigation }: {
   navigation: AnchorNavigation;
 }) {
   const { registerAnchor, refresh } = navigation;
+  const field = `stop:${stop.id}`;
   const heading = useCallback((view: ComponentRef<typeof View> | null) => {
     registerAnchor(stopAnchorId(stop.id), view);
   }, [registerAnchor, stop.id]);
@@ -208,28 +208,28 @@ function StopView({ stop, stale, outdatedHunks, hunks, colors, navigation }: {
   return (
     <View onLayout={refresh} style={[styles.stop, { borderColor: colors.border }]}>
       <View ref={heading} collapsable={false} onLayout={refresh} style={styles.stopHeader}>
-        <Text accessibilityRole="header" style={[styles.stopTitle, { color: colors.foreground }]}>{stop.title}</Text>
+        <SearchText field={`${field}:title`} accessibilityRole="header" style={[styles.stopTitle, { color: colors.foreground }]}>{stop.title}</SearchText>
         {stop.importance === "normal" ? null : (
           <Text style={[styles.meta, { color: importanceColor(colors, stop.importance) }]}>{stop.importance}</Text>
         )}
         {stale ? <Text style={[styles.meta, { color: colors.statusWarning }]}>Out of date</Text> : null}
       </View>
-      <Text style={[styles.prose, { color: colors.foreground }]}>{stop.prose}</Text>
+      <SearchText field={`${field}:prose`} style={[styles.prose, { color: colors.foreground }]}>{stop.prose}</SearchText>
       {stop.observations.map((observation, index) => (
         <View key={index} style={[styles.observation, { backgroundColor: colors.surface2 }]}>
           <View style={styles.observationHeader}>
             <Icon name={ICON_NAMES[observation.icon]} size={12} color={colors.accent} />
-            <Text style={[styles.observationKind, { color: colors.accent }]}>{observation.kind}</Text>
+            <SearchText field={`${field}:observation:${index}:kind`} style={[styles.observationKind, { color: colors.accent }]}>{observation.kind}</SearchText>
             {observation.importance === "normal" ? null : (
               <Text style={[styles.meta, { color: importanceColor(colors, observation.importance) }]}>{observation.importance}</Text>
             )}
           </View>
-          <Text style={[styles.prose, { color: colors.foreground }]}>{observation.note}</Text>
+          <SearchText field={`${field}:observation:${index}:note`} style={[styles.prose, { color: colors.foreground }]}>{observation.note}</SearchText>
         </View>
       ))}
-      {stop.hunkIds.map((id) => {
+      {stop.hunkIds.map((id, index) => {
         const hunk = hunks.get(id);
-        return hunk ? <DocumentHunkView key={id} hunk={hunk} previous={outdatedHunks.has(id)} colors={colors} /> : null;
+        return hunk ? <DocumentHunkView key={id} hunk={hunk} previous={outdatedHunks.has(id)} colors={colors} field={`${field}:hunk:${index}`} /> : null;
       })}
     </View>
   );
@@ -243,13 +243,14 @@ function ChapterView({ chapter, staleStops, outdatedHunks, hunks, colors, naviga
   colors: Colors;
   navigation: AnchorNavigation;
 }) {
+  const field = `chapter:${chapter.id}`;
   return (
     <View style={styles.chapter} onLayout={navigation.refresh}>
       <View style={styles.chapterHeader}>
         <Icon name={ICON_NAMES[chapter.icon]} size={14} color={colors.foreground} />
-        <Text accessibilityRole="header" style={[styles.chapterTitle, { color: colors.foreground }]}>{chapter.title}</Text>
+        <SearchText field={`${field}:title`} accessibilityRole="header" style={[styles.chapterTitle, { color: colors.foreground }]}>{chapter.title}</SearchText>
       </View>
-      {chapter.blurb ? <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{chapter.blurb}</Text> : null}
+      {chapter.blurb ? <SearchText field={`${field}:blurb`} style={[styles.meta, { color: colors.foregroundMuted }]}>{chapter.blurb}</SearchText> : null}
       {chapter.stops.map((stop) => (
         <StopView
           key={stop.id}
@@ -314,10 +315,10 @@ function SkippedView({ document, colors }: { document: WalkthroughDocument; colo
   return (
     <View style={[styles.section, { borderColor: colors.border }]}>
       <Text style={[styles.chapterTitle, { color: colors.foreground }]}>Skipped files</Text>
-      {document.routine.map((note) => (
+      {document.routine.map((note, index) => (
         <View key={note.path} style={styles.routineRow}>
           <Text style={[styles.path, { color: colors.foreground }]}>{note.path}</Text>
-          <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{note.note}</Text>
+          <SearchText field={`uncovered:routine:${index}:note`} style={[styles.meta, { color: colors.foregroundMuted }]}>{note.note}</SearchText>
         </View>
       ))}
     </View>
@@ -343,7 +344,7 @@ function UncoveredView({ document, hunks, open, setOpen, colors }: {
         icon={open ? "ChevronDown" : "ChevronRight"}
         onPress={() => setOpen(!open)}
       />
-      {open && hunks.map((hunk) => <DocumentHunkView key={hunk.id} hunk={hunk} colors={colors} />)}
+      {open && hunks.map((hunk) => <DocumentHunkView key={hunk.id} hunk={hunk} colors={colors} field={`uncovered:hunk:${hunk.id}`} />)}
       {open ? <SkippedView document={document} colors={colors} /> : null}
     </View>
   );
@@ -422,8 +423,8 @@ function DocumentView({
   return (
     <View {...navigation.rootProps} style={[styles.content, styles.document, compact && styles.contentCompact]}>
       <StalenessView document={document} staleness={staleness} staleStopIds={staleStopIds} colors={colors} />
-      <Text accessibilityRole="header" style={[styles.documentTitle, { color: colors.foreground }]}>{document.title}</Text>
-      {document.focus ? <Text style={[styles.prose, { color: colors.foreground }]}>{document.focus}</Text> : null}
+      <SearchText field="document:title" accessibilityRole="header" style={[styles.documentTitle, { color: colors.foreground }]}>{document.title}</SearchText>
+      {document.focus ? <SearchText field="document:focus" style={[styles.prose, { color: colors.foreground }]}>{document.focus}</SearchText> : null}
       {document.chapters.map((chapter) => (
         <ChapterView
           key={chapter.id}
@@ -440,17 +441,46 @@ function DocumentView({
   );
 }
 
-function DocumentReader({ document, staleness, hunks, colors, compact }: DocumentReaderProps) {
+function DocumentReader({ document, staleness, hunks, colors, compact, query, setQuery }: DocumentReaderProps & {
+  query: string;
+  setQuery: (query: string) => void;
+}) {
   const [width, setWidth] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [uncoveredOpen, setUncoveredOpen] = useState(false);
+  const [selection, setSelection] = useState<WalkthroughMatch>();
   const [stopIds] = useState(() => document.chapters.flatMap((chapter) => chapter.stops.map((stop) => stop.id)));
   const navigation = useReadingNavigation(stopIds);
-  const outdatedHunks = new Set(staleness?.outdatedHunkIds ?? staleness?.missingHunkIds);
-  const uncoveredHunks = staleness?.currentUncoveredHunks ?? [...new Set(document.uncoveredHunkIds)].flatMap((id) => {
+  const { jumpTo, registerAnchor, refresh } = navigation;
+  const outdatedHunks = useMemo(() => new Set(staleness?.outdatedHunkIds ?? staleness?.missingHunkIds), [staleness]);
+  const uncoveredHunks = useMemo(() => staleness?.currentUncoveredHunks ?? [...new Set(document.uncoveredHunkIds)].flatMap((id) => {
     const hunk = hunks.get(id);
     return hunk && !outdatedHunks.has(id) ? [hunk] : [];
-  });
+  }), [document, hunks, outdatedHunks, staleness]);
+  const matches = useMemo(() => findWalkthroughMatches(document, hunks, uncoveredHunks, query), [document, hunks, query, uncoveredHunks]);
+  const currentIndex = Math.max(0, matches.findIndex((match) =>
+    selection?.field === match.field && selection.start === match.start && selection.length === match.length,
+  ));
+  const match = matches[currentIndex];
+  const search = { match, highlight: colors, registerAnchor, refresh };
+  const { field, start, length, uncovered } = match ?? {};
+
+  const revealMatch = useCallback((field: string, uncovered: boolean) => {
+    if (uncovered) setUncoveredOpen(true);
+    jumpTo(searchAnchorId(field));
+  }, [jumpTo]);
+
+  useEffect(() => {
+    if (field) revealMatch(field, uncovered ?? false);
+  }, [field, length, query, revealMatch, start, uncovered]);
+
+  const moveMatch = (direction: number) => {
+    if (!matches.length) return;
+    const next = (currentIndex + direction + matches.length) % matches.length;
+    const target = matches[next];
+    setSelection(target);
+    if (next === currentIndex) revealMatch(target.field, target.uncovered);
+  };
   const showContents = stopIds.length > 0;
   const sideBySide = width >= CONTENTS_MIN_PANEL_WIDTH;
   const contents = showContents ? (
@@ -469,6 +499,30 @@ function DocumentReader({ document, staleness, hunks, colors, compact }: Documen
           <ToolbarButton label="Jump to stop" icon="List" expanded={menuOpen} colors={colors} onPress={() => setMenuOpen(true)} />
         </View>
       ) : null}
+      <View style={[styles.jumpBar, styles.searchBar, { borderColor: colors.border }]}>
+        <TextInput
+          accessibilityLabel="Find in walkthrough"
+          placeholder="Find in walkthrough"
+          placeholderTextColor={colors.foregroundMuted}
+          value={query}
+          onChangeText={(value) => {
+            setSelection(undefined);
+            setQuery(value);
+          }}
+          onSubmitEditing={() => moveMatch(1)}
+          submitBehavior="submit"
+          autoCapitalize="none"
+          autoCorrect={false}
+          style={[styles.commitInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.surface1 }]}
+        />
+        {query.trim() ? (
+          <Text accessibilityLiveRegion="polite" style={[styles.meta, { color: colors.foregroundMuted }]}>
+            {match ? `${currentIndex + 1} of ${matches.length} ${matches.length === 1 ? "match" : "matches"}` : "No matches"}
+          </Text>
+        ) : null}
+        <ToolbarButton accessibilityLabel="Previous match" icon="ChevronUp" colors={colors} disabled={!match} onPress={() => moveMatch(-1)} />
+        <ToolbarButton accessibilityLabel="Next match" icon="ChevronDown" colors={colors} disabled={!match} onPress={() => moveMatch(1)} />
+      </View>
       <View style={styles.readerBody}>
         {showContents && sideBySide ? (
           <View style={[styles.contentsSidebar, { backgroundColor: colors.surface1, borderColor: colors.border }]}>
@@ -479,18 +533,20 @@ function DocumentReader({ document, staleness, hunks, colors, compact }: Documen
           </View>
         ) : null}
         <ScrollView {...navigation.scrollProps} style={styles.readingScroll}>
-          <DocumentView
-            document={document}
-            staleness={staleness}
-            hunks={hunks}
-            colors={colors}
-            compact={compact}
-            navigation={navigation}
-            outdatedHunks={outdatedHunks}
-            uncoveredHunks={uncoveredHunks}
-            uncoveredOpen={uncoveredOpen}
-            setUncoveredOpen={setUncoveredOpen}
-          />
+          <WalkthroughSearch.Provider value={search}>
+            <DocumentView
+              document={document}
+              staleness={staleness}
+              hunks={hunks}
+              colors={colors}
+              compact={compact}
+              navigation={navigation}
+              outdatedHunks={outdatedHunks}
+              uncoveredHunks={uncoveredHunks}
+              uncoveredOpen={uncoveredOpen}
+              setUncoveredOpen={setUncoveredOpen}
+            />
+          </WalkthroughSearch.Provider>
         </ScrollView>
       </View>
       <Modal title="Jump to stop" open={showContents && !sideBySide && menuOpen} onOpenChange={setMenuOpen}>
@@ -566,6 +622,7 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
     const [jobError, setJobError] = useState<string | null>(null);
     const [actionError, setActionError] = useState<string | null>(null);
     const [displayed, setDisplayed] = useState<Pick<JobStatus, "document" | "staleness" | "hunks" | "source" | "documentMetadata">>();
+    const [query, setQuery] = useState("");
     const { document, staleness = null, source, documentMetadata } = displayed ?? {};
     const [starting, setStarting] = useState(false);
     const [cancelling, setCancelling] = useState(false);
@@ -966,7 +1023,16 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
           {document ? <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{documentDetails}</Text> : null}
         </View>
         {document ? (
-          <DocumentReader key={documentMetadata?.jobId ?? workspaceId} document={document} staleness={staleness} hunks={hunks} colors={colors} compact={layout.compact} />
+          <DocumentReader
+            key={documentMetadata?.jobId ?? workspaceId}
+            document={document}
+            staleness={staleness}
+            hunks={hunks}
+            colors={colors}
+            compact={layout.compact}
+            query={query}
+            setQuery={setQuery}
+          />
         ) : (
           <ScrollView style={styles.readingScroll} contentContainerStyle={[styles.content, layout.compact && styles.contentCompact]}>
             <DiffSummary {...diffSummary} />
@@ -999,6 +1065,7 @@ const styles = StyleSheet.create({
   readerBody: { flex: 1, minHeight: 0, flexDirection: "row" },
   readingScroll: { flex: 1, minHeight: 0, minWidth: 0 },
   jumpBar: { borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 8, paddingVertical: 4 },
+  searchBar: { flexDirection: "row", alignItems: "center", gap: 4 },
   content: { padding: 16, gap: 10 },
   contentCompact: { padding: 10 },
   commit: { flexDirection: "row", alignItems: "center", gap: 8 },

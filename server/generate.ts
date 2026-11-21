@@ -284,7 +284,7 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
         : null;
       const hunks = result ? [...result.builtHunks.values()].flatMap((file) => file.map(({ hunk }) => {
         const match = current?.matches.get(hunk.id);
-        return match ? { ...match, id: hunk.id } : hunk;
+        return match && match.patch !== hunk.patch ? { ...match, id: hunk.id } : hunk;
       })) : [];
       return {
         job: view,

@@ -1,12 +1,17 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import contribute from "../index.server";
 import { cancelRpc, diffRpc, generateRpc, statusRpc } from "../shared/contracts";
 import type { PaseoApi } from "../server/host-types";
+
+vi.mock(import("node:fs/promises"), async (importOriginal) => {
+  const original = await importOriginal();
+  return { ...original, rename: vi.fn(original.rename) };
+});
 
 let homeRoot = "";
 const homeRoots: string[] = [];
@@ -202,6 +207,12 @@ const handlerFor = (handlers: Map<string, Handler>, name: string): Handler => {
 
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 const waitUntil = async (ready: () => boolean) => {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     if (ready()) return;
@@ -273,6 +284,73 @@ const modelAnswer = (aliases: string[], title = "The change") =>
   });
 
 describe("walkthrough cache", () => {
+  it("keeps a published result available while its job is pruned during a cache write", async () => {
+    const repo = await createRepo();
+    await writeFile(join(repo, "app.ts"), "changed content\n");
+    const { handlers, cleanup } = load();
+    const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
+    const workspaceId = "ws-1";
+    const generate = handlerFor(handlers, generateRpc.name);
+    const status = handlerFor(handlers, statusRpc.name);
+    const cancel = handlerFor(handlers, cancelRpc.name);
+    const request = { workspaceId, scope: "all" };
+    const context = { paseo: fake.paseo };
+    const { rename: renameFile } = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    const cache = join(homeRoot, "home", "plugin-data", "walkthrough", "cache", "workspaces");
+    const heldWrite = deferred();
+    const intercepted = deferred();
+    let holding = true;
+    vi.mocked(rename).mockImplementation(async (from, to) => {
+      if (holding && typeof to === "string" && dirname(to) === cache) {
+        holding = false;
+        intercepted.resolve();
+        await heldWrite.promise;
+      }
+      await renameFile(from, to);
+    });
+
+    const refresh = deferred();
+    const other = {
+      ...fake.paseo,
+      workspaces: { ref: () => ({ refresh: () => refresh.promise }) },
+    } as unknown as PaseoApi;
+    onTestFinished(async () => {
+      heldWrite.resolve();
+      refresh.resolve();
+      await cleanup();
+      vi.mocked(rename).mockReset();
+    });
+
+    const first = generateRpc.output.parse(await generate(request, context));
+    fake.release(modelAnswer(["h1"], "Published walkthrough"));
+    await intercepted.promise;
+
+    const cancellations: string[] = [];
+    for (let i = 0; i < 17; i += 1) {
+      const next = generateRpc.output.parse(await generate({ ...request, workspaceId: "other" }, { paseo: other }));
+      cancellations.push(next.jobId);
+      expect(await cancel({ workspaceId: "other", jobId: next.jobId }, { paseo: other })).toMatchObject({ cancelled: true });
+    }
+    refresh.resolve();
+    await vi.waitFor(async () => {
+      const pruned = statusRpc.output.parse(await status({ workspaceId: "other", jobId: cancellations[0] }, context));
+      expect(pruned.job).toBeNull();
+    });
+
+    expect((await callStatus(handlers, fake.paseo, first.jobId)).job).toBeNull();
+    expect((await callStatus(handlers, fake.paseo, null)).document?.title).toBe("Published walkthrough");
+
+    const replacement = generateRpc.output.parse(await generate({ ...request, force: true }, context));
+    expect((await callStatus(handlers, fake.paseo, replacement.jobId)).document?.title).toBe("Published walkthrough");
+    heldWrite.resolve();
+    fake.release(modelAnswer(["h1"], "Replacement walkthrough"));
+    expect((await waitForTerminal(handlers, fake.paseo, replacement.jobId)).document?.title).toBe("Replacement walkthrough");
+
+    const reopened = load();
+    onTestFinished(reopened.cleanup);
+    expect((await callStatus(reopened.handlers, fake.paseo, null)).document?.title).toBe("Replacement walkthrough");
+  });
+
   it("restores a cached All stop with a hunk saved before sections were recorded", async () => {
     const repo = await createRepo();
     await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 22;\nconst c = 3;\n");

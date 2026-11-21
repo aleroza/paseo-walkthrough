@@ -71,11 +71,14 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
   const jobs = new Map<string, Job>();
   const latest = new Map<string, string>();
   const cache = createWalkthroughCache(deps.dataDirectory);
+  const pendingPublications = new Map<string, { result: PublishedDocument; persistence: Promise<void> }>();
   const running = new Set<Promise<void>>();
   const pendingCleanup = new Set<() => Promise<void>>();
   let closed = false;
 
   const readPrevious = async (workspaceId: string): Promise<PublishedDocument | null> => {
+    const pending = pendingPublications.get(workspaceId);
+    if (pending) return pending.result;
     const saved = await cache.last(workspaceId);
     if (!saved) return null;
     const { document, source, diff, metadata } = saved;
@@ -132,17 +135,25 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
       const digest = buildDigest(diff.files, scope);
       if (digest.hunkCount === 0) throw new Error(emptyChangeMessage(diff.fileCount, digest.generatedPaths.length));
       const provider = await resolveModel(paseo, model);
-      // A new job may start while a successful predecessor is still saving its result.
-      await job.persistence;
+      // A completed job can be pruned before the workspace's cache write finishes.
+      await pendingPublications.get(job.workspaceId)?.persistence;
       if (signal.aborted) return;
       const { bucket, key } = identifyChange(collected.root, relative(collected.root, directory), source, collected.base, provider, language, diff);
       const finish = async (document: WalkthroughDocument, cacheHit: boolean) => {
         if (signal.aborted) return;
         const metadata = { jobId: job.id, model: provider, language };
-        job.result = { document, source, builtHunks: snapshotHunks(diff.files), metadata };
+        const result = { document, source, builtHunks: snapshotHunks(diff.files), metadata };
+        const persistence = cache.save(bucket, job.workspaceId, { key, source, diff, document, metadata }, cacheHit);
+        const publication = { result, persistence };
+        pendingPublications.set(job.workspaceId, publication);
+        job.result = result;
+        job.persistence = persistence;
         setStage(job, "done");
-        job.persistence = cache.save(bucket, job.workspaceId, { key, source, diff, document, metadata }, cacheHit);
-        await job.persistence;
+        try {
+          await persistence;
+        } finally {
+          if (pendingPublications.get(job.workspaceId) === publication) pendingPublications.delete(job.workspaceId);
+        }
       };
 
       const cached = force ? null : await cache.find(bucket, key);
@@ -248,7 +259,7 @@ export function createWalkthroughService(deps: { dataDirectory: string }) {
         },
         result: null,
         previous: active?.result ? Promise.resolve(active.result) : active?.previous ?? readPrevious(request.workspaceId),
-        persistence: active?.persistence ?? Promise.resolve(),
+        persistence: Promise.resolve(),
         cancellation: new AbortController(),
       };
       jobs.set(job.id, job);

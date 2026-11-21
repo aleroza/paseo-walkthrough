@@ -3,21 +3,23 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import contribute from "../index.server";
 import { cancelRpc, diffRpc, generateRpc, statusRpc } from "../shared/contracts";
 import type { PaseoApi } from "../server/host-types";
 
 let homeRoot = "";
+const homeRoots: string[] = [];
 
-beforeAll(async () => {
+beforeEach(async () => {
   homeRoot = await mkdtemp(join(tmpdir(), "walkthrough-home-"));
+  homeRoots.push(homeRoot);
   vi.stubEnv("PASEO_HOME", join(homeRoot, "home"));
 });
 
 afterAll(async () => {
   vi.unstubAllEnvs();
-  await rm(homeRoot, { recursive: true, force: true });
+  await Promise.all(homeRoots.map((root) => rm(root, { recursive: true, force: true })));
 });
 
 async function createRepo(): Promise<string> {
@@ -479,7 +481,8 @@ describe("walkthrough.generate", () => {
     await waitUntil(() => fake.promptCount() === 1);
     fake.release({ error: "Invalid OpenCode structured output: data/chapters must be array" });
 
-    const secondTurn = await waitFor(handlers, fake.paseo, generated.jobId, (status) => fake.promptCount() === 2 || status.job?.state === "failed");
+    const secondTurn = await waitFor(handlers, fake.paseo, generated.jobId, (status) =>
+      (fake.promptCount() === 2 && status.job?.stages.includes("retrying") === true) || status.job?.state === "failed");
     expect(secondTurn.job?.stages).toContain("retrying");
     expect(fake.creations[1]?.prompt).toContain("data/chapters must be array");
     expect(fake.creations[1]?.outputSchema).toEqual(fake.creations[0]?.outputSchema);

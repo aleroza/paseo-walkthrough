@@ -2,22 +2,24 @@ import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import contribute from "../index.server";
 import { diffRpc, generateRpc, statusRpc } from "../shared/contracts";
 import type { PaseoApi } from "../server/host-types";
 import type { Hunk, Staleness } from "../shared/types";
 
 let homeRoot = "";
+const homeRoots: string[] = [];
 
-beforeAll(async () => {
+beforeEach(async () => {
   homeRoot = await mkdtemp(join(tmpdir(), "walkthrough-home-"));
+  homeRoots.push(homeRoot);
   vi.stubEnv("PASEO_HOME", join(homeRoot, "home"));
 });
 
 afterAll(async () => {
   vi.unstubAllEnvs();
-  await rm(homeRoot, { recursive: true, force: true });
+  await Promise.all(homeRoots.map((root) => rm(root, { recursive: true, force: true })));
 });
 
 async function createRepo(names: string[], contents: Record<string, string> = {}): Promise<string> {

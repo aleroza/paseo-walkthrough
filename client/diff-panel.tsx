@@ -1,6 +1,7 @@
 import type { PluginClientContext, PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
 import { useTabState } from "@getpaseo/plugin/client";
-import { Icon, ScrollView, SettingsSelect, TextInput } from "@getpaseo/plugin/client/ui";
+import { Icon, Modal, ScrollView, SettingsSelect, TextInput } from "@getpaseo/plugin/client/ui";
+import type { ComponentRef, Ref } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
@@ -17,7 +18,7 @@ const MODELS_POLL_MS = 15_000;
 type Colors = PluginTheme["colors"];
 
 const SOURCES: { scope: WalkthroughScope; label: string }[] = [
-  { scope: "all", label: "All" },
+  { scope: "all", label: "All changes" },
   { scope: "staged", label: "Staged" },
   { scope: "unstaged", label: "Unstaged" },
   { scope: "branch", label: "Branch" },
@@ -83,6 +84,53 @@ const lineColor = (colors: Colors, line: string) => {
   return colors.foregroundMuted;
 };
 
+function ToolbarButton({
+  label,
+  accessibilityLabel = label,
+  icon,
+  onPress,
+  colors,
+  primary = false,
+  disabled = false,
+  expanded,
+  selected,
+  buttonRef,
+}: {
+  label?: string;
+  accessibilityLabel?: string;
+  icon?: string;
+  onPress: () => void;
+  colors: Colors;
+  primary?: boolean;
+  disabled?: boolean;
+  expanded?: boolean;
+  selected?: boolean;
+  buttonRef?: Ref<ComponentRef<typeof View>>;
+}) {
+  const [focused, setFocused] = useState(false);
+  const color = primary && !disabled ? colors.accentForeground : disabled ? colors.foregroundMuted : colors.foreground;
+
+  return (
+    <Pressable
+      ref={buttonRef}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={{ disabled, expanded, selected }}
+      disabled={disabled}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      onPress={onPress}
+      style={({ pressed }) => [styles.action, {
+        borderColor: focused ? colors.foreground : colors.border,
+        backgroundColor: primary && !disabled ? colors.accent : pressed || expanded ? colors.surface2 : colors.surface1,
+      }]}
+    >
+      {icon ? <Icon name={icon} size={14} color={color} /> : null}
+      {label ? <Text style={[styles.actionLabel, { color }]} numberOfLines={1}>{label}</Text> : null}
+    </Pressable>
+  );
+}
+
 function HunkView({ hunk, colors }: { hunk: Hunk; colors: Colors }) {
   const body = hunk.patch.split("\n").slice(1);
   if (body.length > 0 && body[body.length - 1] === "") body.pop();
@@ -90,7 +138,7 @@ function HunkView({ hunk, colors }: { hunk: Hunk; colors: Colors }) {
     <View style={styles.hunk}>
       <Text style={[styles.hunkHeader, { color: colors.foregroundMuted }]}>{hunk.header}</Text>
       {body.map((line, index) => (
-        <Text key={index} style={[styles.code, { color: lineColor(colors, line) }]}>
+        <Text key={index} selectable style={[styles.code, { color: lineColor(colors, line) }]}>
           {line.length > 0 ? line : " "}
         </Text>
       ))}
@@ -100,9 +148,11 @@ function HunkView({ hunk, colors }: { hunk: Hunk; colors: Colors }) {
 
 function DocumentHunkView({ hunk, colors }: { hunk: Hunk; colors: Colors }) {
   return (
-    <View style={styles.documentHunk}>
-      <Text style={[styles.path, { color: colors.foreground }]}>{hunk.path}</Text>
-      <HunkView hunk={hunk} colors={colors} />
+    <View style={[styles.documentHunk, { backgroundColor: colors.surface1, borderColor: colors.border }]}>
+      <Text style={[styles.hunkPath, { backgroundColor: colors.surface2, color: colors.foreground }]}>{hunk.path}</Text>
+      <View style={styles.anchoredPatch}>
+        <HunkView hunk={hunk} colors={colors} />
+      </View>
     </View>
   );
 }
@@ -136,15 +186,13 @@ function StopView({ stop, stale, hunks, colors }: { stop: Stop; stale: boolean; 
   return (
     <View style={[styles.stop, { borderColor: colors.border }]}>
       <View style={styles.stopHeader}>
-        <Text style={[styles.stopTitle, { color: colors.foreground }]}>{stop.title}</Text>
-        <Text style={[styles.meta, { color: importanceColor(colors, stop.importance) }]}>{stop.importance}</Text>
+        <Text accessibilityRole="header" style={[styles.stopTitle, { color: colors.foreground }]}>{stop.title}</Text>
+        {stop.importance === "normal" ? null : (
+          <Text style={[styles.meta, { color: importanceColor(colors, stop.importance) }]}>{stop.importance}</Text>
+        )}
         {stale ? <Text style={[styles.meta, { color: colors.statusWarning }]}>Out of date</Text> : null}
       </View>
       <Text style={[styles.prose, { color: colors.foreground }]}>{stop.prose}</Text>
-      {stop.hunkIds.map((id) => {
-        const hunk = hunks.get(id);
-        return hunk ? <DocumentHunkView key={id} hunk={hunk} colors={colors} /> : null;
-      })}
       {stop.observations.map((observation, index) => (
         <View key={index} style={[styles.observation, { backgroundColor: colors.surface2 }]}>
           <View style={styles.observationHeader}>
@@ -157,16 +205,20 @@ function StopView({ stop, stale, hunks, colors }: { stop: Stop; stale: boolean; 
           <Text style={[styles.prose, { color: colors.foreground }]}>{observation.note}</Text>
         </View>
       ))}
+      {stop.hunkIds.map((id) => {
+        const hunk = hunks.get(id);
+        return hunk ? <DocumentHunkView key={id} hunk={hunk} colors={colors} /> : null;
+      })}
     </View>
   );
 }
 
 function ChapterView({ chapter, staleStops, hunks, colors }: { chapter: Chapter; staleStops: Set<string>; hunks: Map<string, Hunk>; colors: Colors }) {
   return (
-    <View style={[styles.chapter, { borderColor: colors.border, backgroundColor: colors.surface1 }]}>
+    <View style={styles.chapter}>
       <View style={styles.chapterHeader}>
         <Icon name={ICON_NAMES[chapter.icon]} size={14} color={colors.foreground} />
-        <Text style={[styles.chapterTitle, { color: colors.foreground }]}>{chapter.title}</Text>
+        <Text accessibilityRole="header" style={[styles.chapterTitle, { color: colors.foreground }]}>{chapter.title}</Text>
       </View>
       {chapter.blurb ? <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{chapter.blurb}</Text> : null}
       {chapter.stops.map((stop) => (
@@ -178,10 +230,11 @@ function ChapterView({ chapter, staleStops, hunks, colors }: { chapter: Chapter;
 
 /** The contents of the document: the chapters and the stops they hold, in reading order. */
 function ContentsView({ document, colors }: { document: WalkthroughDocument; colors: Colors }) {
+  const [open, setOpen] = useState(false);
   return (
-    <View style={[styles.contents, { borderColor: colors.border }]}>
-      <Text style={[styles.chapterTitle, { color: colors.foreground }]}>Contents</Text>
-      {document.chapters.map((chapter) => (
+    <View style={styles.contents}>
+      <ToolbarButton label="Contents" colors={colors} icon={open ? "ChevronDown" : "ChevronRight"} expanded={open} onPress={() => setOpen(!open)} />
+      {open && document.chapters.map((chapter) => (
         <View key={chapter.id} style={styles.contentsChapter}>
           <View style={styles.chapterHeader}>
             <Icon name={ICON_NAMES[chapter.icon]} size={12} color={colors.foregroundMuted} />
@@ -216,17 +269,23 @@ function SkippedView({ document, colors }: { document: WalkthroughDocument; colo
 
 /** The hunks no stop covered: the reader still has to read them. */
 function UncoveredView({ document, hunks, colors }: { document: WalkthroughDocument; hunks: Map<string, Hunk>; colors: Colors }) {
-  if (document.uncoveredHunkIds.length === 0) return null;
+  const [open, setOpen] = useState(false);
+  const count = document.uncoveredHunkIds.length;
+  if (count === 0 && document.routine.length === 0) return null;
   return (
-    <View style={[styles.section, { borderColor: colors.border }]}>
-      <Text style={[styles.chapterTitle, { color: colors.foreground }]}>Not covered by a stop</Text>
-      <Text style={[styles.meta, { color: colors.foregroundMuted }]}>
-        {`${document.uncoveredHunkIds.length} ${document.uncoveredHunkIds.length === 1 ? "hunk" : "hunks"} no stop explains.`}
-      </Text>
-      {document.uncoveredHunkIds.map((id) => {
+    <View style={styles.contents}>
+      <ToolbarButton
+        label={count ? `Not covered · ${count} ${count === 1 ? "hunk" : "hunks"}` : "Not covered"}
+        colors={colors}
+        expanded={open}
+        icon={open ? "ChevronDown" : "ChevronRight"}
+        onPress={() => setOpen(!open)}
+      />
+      {open && document.uncoveredHunkIds.map((id) => {
         const hunk = hunks.get(id);
         return hunk ? <DocumentHunkView key={id} hunk={hunk} colors={colors} /> : null;
       })}
+      {open ? <SkippedView document={document} colors={colors} /> : null}
     </View>
   );
 }
@@ -288,15 +347,49 @@ function DocumentView({
   return (
     <View style={styles.document}>
       <StalenessView document={document} staleness={staleness} staleStopIds={staleStopIds} colors={colors} />
-      <Text style={[styles.documentTitle, { color: colors.foreground }]}>{document.title}</Text>
+      <Text accessibilityRole="header" style={[styles.documentTitle, { color: colors.foreground }]}>{document.title}</Text>
       {document.focus ? <Text style={[styles.prose, { color: colors.foreground }]}>{document.focus}</Text> : null}
       <ContentsView document={document} colors={colors} />
       {document.chapters.map((chapter) => (
         <ChapterView key={chapter.id} chapter={chapter} staleStops={staleStopIds} hunks={hunks} colors={colors} />
       ))}
-      <SkippedView document={document} colors={colors} />
       <UncoveredView document={document} hunks={hunks} colors={colors} />
     </View>
+  );
+}
+
+type DiffSummaryProps = {
+  diff: Diff | null;
+  base: string | null;
+  error: string | null;
+  empty: string | null;
+  colors: Colors;
+};
+
+function DiffSummary({ diff, base, error, empty, colors }: DiffSummaryProps) {
+  return (
+    <>
+      {error ? <Text style={[styles.meta, { color: colors.statusDanger }]}>{error}</Text> : null}
+      {diff ? (
+        <Text style={[styles.summary, { color: colors.foreground }]}>
+          {`${diff.fileCount} ${diff.fileCount === 1 ? "file" : "files"}, ${diff.hunkCount} ${diff.hunkCount === 1 ? "hunk" : "hunks"}`}
+        </Text>
+      ) : null}
+      {base ? <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{`Compared against ${base}`}</Text> : null}
+      {empty ? <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{empty}</Text> : null}
+    </>
+  );
+}
+
+function SourceDiff(props: DiffSummaryProps) {
+  const { diff, colors } = props;
+  return (
+    <>
+      <DiffSummary {...props} />
+      {diff?.files.map((file) => (
+        <FileView key={file.path} file={file} generated={diff.generatedPaths.includes(file.path)} colors={colors} />
+      ))}
+    </>
   );
 }
 
@@ -328,6 +421,9 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
     const { document, staleness = null, source, documentMetadata } = displayed ?? {};
     const [starting, setStarting] = useState(false);
     const [cancelling, setCancelling] = useState(false);
+    const [openMenu, setOpenMenu] = useState<"source" | "options" | null>(null);
+    const [sourceDiffOpen, setSourceDiffOpen] = useState(false);
+    const sourceButton = useRef<ComponentRef<typeof View>>(null);
 
     const refreshStatus = useCallback(() => {
       statusVersion.current += 1;
@@ -575,128 +671,154 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
               : EMPTY[scope]
             : null;
 
+    const sourceLabel = SOURCES.find((source) => source.scope === scope)?.label ?? scope;
+    const sourceMenuOpen = openMenu === "source";
+    const optionsOpen = openMenu === "options";
+    const diffSummary = { diff, base, error, empty, colors };
+
     return (
-      <ScrollView style={{ flex: 1, backgroundColor: colors.surface0 }} contentContainerStyle={[styles.content, layout.compact && styles.contentCompact]}>
-        <View style={styles.sources}>
-          {SOURCES.map((source) => {
-            const active = source.scope === scope;
-            return (
-              <Pressable
-                key={source.scope}
-                accessibilityRole="button"
-                accessibilityState={{ selected: active }}
-                accessibilityLabel={`Show the ${source.label} changes`}
-                onPress={() => choose({ scope: source.scope })}
-                style={[styles.source, { borderColor: colors.border, backgroundColor: active ? colors.accent : colors.surface1 }]}
-              >
-                <Text style={[styles.sourceText, { color: active ? colors.accentForeground : colors.foreground }]}>{source.label}</Text>
-              </Pressable>
-            );
-          })}
-        </View>
-        {scope === "commit" ? <>
-          <SettingsSelect
-            label="Commit"
-            value={commit ?? ""}
-            options={commitOptions}
-            disabled={!history?.commits.length}
-            error={history?.error}
-            onValueChange={(hash) => {
-              if (hash) selectCommit(hash);
-            }}
-          />
-          <View style={styles.commit}>
-            <TextInput
-              value={draft}
-              onChangeText={setDraft}
-              onSubmitEditing={applyCommit}
-              placeholder="Or enter a full commit hash"
-              autoCapitalize="none"
-              autoCorrect={false}
-              style={[styles.commitInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.surface1 }]}
+      <View style={[styles.panel, { backgroundColor: colors.surface0 }]}>
+        <View style={[styles.toolbar, { borderColor: colors.border }]}>
+          <View style={styles.actions}>
+            <ToolbarButton
+              label={sourceLabel}
+              accessibilityLabel={`Source: ${sourceLabel}`}
+              icon={sourceMenuOpen ? "ChevronUp" : "ChevronDown"}
+              colors={colors}
+              expanded={sourceMenuOpen}
+              buttonRef={sourceButton}
+              onPress={() => setOpenMenu(sourceMenuOpen ? null : "source")}
             />
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Show the commit"
-              onPress={applyCommit}
-              style={[styles.source, { borderColor: colors.border, backgroundColor: colors.accent }]}
-            >
-              <Text style={[styles.sourceText, { color: colors.accentForeground }]}>Show</Text>
-            </Pressable>
+            <ToolbarButton
+              label={starting || running ? "Generating…" : "Generate"}
+              accessibilityLabel={starting || running ? "Generating the walkthrough" : "Generate the walkthrough"}
+              colors={colors}
+              primary
+              disabled={generateDisabled}
+              onPress={generate}
+            />
+            {running && jobId ? (
+              <ToolbarButton
+                label={cancelling ? "Cancelling…" : "Cancel"}
+                accessibilityLabel="Cancel the walkthrough"
+                colors={colors}
+                disabled={cancelling}
+                onPress={cancel}
+              />
+            ) : null}
+            <ToolbarButton
+              label="Diff"
+              accessibilityLabel="View source diff"
+              icon="FileDiff"
+              colors={colors}
+              disabled={needsCommit}
+              onPress={() => setSourceDiffOpen(true)}
+            />
+            <ToolbarButton
+              accessibilityLabel="Walkthrough options"
+              icon="Settings"
+              colors={colors}
+              expanded={optionsOpen}
+              onPress={() => setOpenMenu(optionsOpen ? null : "options")}
+            />
           </View>
-        </> : null}
-        <View style={styles.pickers}>
-          <SettingsSelect
-            label="Model"
-            value={model ?? ""}
-            options={modelOptions}
-            onValueChange={(value) => choose({ model: value === "" ? null : value })}
-          />
-          <SettingsSelect
-            label="Language"
-            value={language}
-            options={languageOptions}
-            onValueChange={(value) => choose({ language: value })}
-          />
-        </View>
-        {modelsError ? <Text style={[styles.meta, { color: colors.statusDanger }]}>{modelsError}</Text> : null}
-        {modelGone ? (
-          <Text style={[styles.meta, { color: colors.statusWarning }]}>The model you chose is not available any more.</Text>
-        ) : null}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Generate the walkthrough"
-          accessibilityState={{ disabled: generateDisabled }}
-          disabled={generateDisabled}
-          onPress={generate}
-          style={[styles.generate, { borderColor: colors.border, backgroundColor: running ? colors.surface2 : colors.accent }]}
-        >
-          <Text style={[styles.generateText, { color: running ? colors.foregroundMuted : colors.accentForeground }]}>
-            {starting || running ? "Generating..." : "Generate walkthrough"}
-          </Text>
-        </Pressable>
-        {running && jobId ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Cancel the walkthrough"
-            accessibilityState={{ disabled: cancelling }}
-            disabled={cancelling}
-            onPress={cancel}
-            style={[styles.cancel, { borderColor: colors.border, backgroundColor: colors.surface2 }]}
-          >
-            <Text style={[styles.generateText, { color: colors.foreground }]}>
-              {cancelling ? "Cancelling..." : "Cancel walkthrough"}
-            </Text>
-          </Pressable>
-        ) : null}
-        {stage ? (
-          <View style={styles.stages}>
-            <Text style={[styles.stage, { color: colors.foreground }]}>{STAGE_LABELS[stage]}</Text>
-            <View style={styles.trail}>
-              {stages.map((entry, index) => (
-                <Text key={`${entry}-${index}`} style={[styles.meta, { color: colors.foregroundMuted }]}>
-                  {index > 0 ? " · " : ""}
-                  {entry}
-                </Text>
+          {sourceMenuOpen ? (
+            <View style={styles.actions}>
+              {SOURCES.map((source) => (
+                <ToolbarButton
+                  key={source.scope}
+                  label={source.label}
+                  colors={colors}
+                  primary={source.scope === scope}
+                  selected={source.scope === scope}
+                  onPress={() => {
+                    choose({ scope: source.scope });
+                    sourceButton.current?.focus();
+                    setOpenMenu(null);
+                  }}
+                />
               ))}
             </View>
-          </View>
-        ) : null}
-        {actionError || jobError ? <Text style={[styles.meta, { color: colors.statusDanger }]}>{actionError ?? jobError}</Text> : null}
-        {document ? <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{documentDetails}</Text> : null}
-        {document ? <DocumentView document={document} staleness={staleness} hunks={hunks} colors={colors} /> : null}
-        {error ? <Text style={[styles.meta, { color: colors.statusDanger }]}>{error}</Text> : null}
-        {diff ? (
-          <Text style={[styles.summary, { color: colors.foreground }]}>
-            {`${diff.fileCount} ${diff.fileCount === 1 ? "file" : "files"}, ${diff.hunkCount} ${diff.hunkCount === 1 ? "hunk" : "hunks"}`}
-          </Text>
-        ) : null}
-        {base ? <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{`compared against ${base}`}</Text> : null}
-        {empty ? <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{empty}</Text> : null}
-        {diff?.files.map((file) => (
-          <FileView key={file.path} file={file} generated={diff.generatedPaths.includes(file.path)} colors={colors} />
-        ))}
-      </ScrollView>
+          ) : null}
+          {scope === "commit" ? (
+            <>
+              <SettingsSelect
+                label="Commit"
+                value={commit ?? ""}
+                options={commitOptions}
+                disabled={!history?.commits.length}
+                error={history?.error}
+                onValueChange={(hash) => {
+                  if (hash) selectCommit(hash);
+                }}
+              />
+              {!document || sourceMenuOpen ? (
+                <View style={styles.commit}>
+                  <TextInput
+                    value={draft}
+                    onChangeText={setDraft}
+                    onSubmitEditing={applyCommit}
+                    accessibilityLabel="Full commit hash"
+                    placeholder="Or enter a full commit hash"
+                    placeholderTextColor={colors.foregroundMuted}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={[styles.commitInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.surface1 }]}
+                  />
+                  <ToolbarButton label="Show" accessibilityLabel="Show the commit" colors={colors} onPress={applyCommit} />
+                </View>
+              ) : null}
+            </>
+          ) : null}
+          {optionsOpen ? (
+            <View style={[styles.options, { backgroundColor: colors.surface1, borderColor: colors.border }]}>
+              <SettingsSelect
+                label="Model"
+                value={model ?? ""}
+                options={modelOptions}
+                onValueChange={(value) => choose({ model: value === "" ? null : value })}
+              />
+              <SettingsSelect
+                label="Language"
+                value={language}
+                options={languageOptions}
+                onValueChange={(value) => choose({ language: value })}
+              />
+            </View>
+          ) : null}
+          {modelsError && (optionsOpen || !document) ? <Text style={[styles.meta, { color: colors.statusDanger }]}>{modelsError}</Text> : null}
+          {modelGone ? (
+            <Text style={[styles.meta, { color: colors.statusWarning }]}>The selected model is unavailable.</Text>
+          ) : null}
+          {stage && (stage !== "done" || !document) ? (
+            <View style={styles.stages} accessibilityLiveRegion="polite">
+              <Text style={[styles.stage, { color: colors.foreground }]}>{STAGE_LABELS[stage]}</Text>
+              <View style={styles.trail}>
+                {stages.map((entry, index) => (
+                  <Text key={`${entry}-${index}`} style={[styles.meta, { color: colors.foregroundMuted }]}>
+                    {index > 0 ? " · " : ""}
+                    {entry}
+                  </Text>
+                ))}
+              </View>
+            </View>
+          ) : null}
+          {actionError || jobError ? (
+            <Text accessibilityLiveRegion="polite" style={[styles.meta, { color: colors.statusDanger }]}>{actionError ?? jobError}</Text>
+          ) : null}
+          {document ? <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{documentDetails}</Text> : null}
+        </View>
+        <ScrollView style={styles.readingScroll} contentContainerStyle={[styles.content, layout.compact && styles.contentCompact]}>
+          {document ? <DocumentView document={document} staleness={staleness} hunks={hunks} colors={colors} /> : <DiffSummary {...diffSummary} />}
+        </ScrollView>
+        <Modal title={`Source diff · ${sourceLabel}`} open={sourceDiffOpen} onOpenChange={setSourceDiffOpen}>
+          {sourceDiffOpen ? (
+            <Modal.Content contentContainerStyle={[styles.content, layout.compact && styles.contentCompact]}>
+              <SourceDiff {...diffSummary} />
+            </Modal.Content>
+          ) : null}
+        </Modal>
+      </View>
     );
   }
 
@@ -706,17 +828,17 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
 }
 
 const styles = StyleSheet.create({
+  panel: { flex: 1, minHeight: 0, minWidth: 0 },
+  toolbar: { borderBottomWidth: StyleSheet.hairlineWidth, padding: 8, gap: 8 },
+  actions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 4 },
+  action: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, minHeight: 30, maxWidth: "100%", borderWidth: 1, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 4 },
+  actionLabel: { fontSize: 12, fontWeight: "600", flexShrink: 1 },
+  options: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 8 },
+  readingScroll: { flex: 1, minHeight: 0 },
   content: { padding: 16, gap: 10 },
-  contentCompact: { padding: 12 },
-  sources: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
-  pickers: { gap: 2 },
-  source: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 },
-  sourceText: { fontSize: 12, fontWeight: "600" },
+  contentCompact: { padding: 10 },
   commit: { flexDirection: "row", alignItems: "center", gap: 8 },
-  commitInput: { flex: 1, borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, fontSize: 12 },
-  generate: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, alignItems: "center" },
-  cancel: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, alignItems: "center" },
-  generateText: { fontSize: 13, fontWeight: "600" },
+  commitInput: { flex: 1, minWidth: 0, borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 6, fontSize: 12 },
   stages: { gap: 2 },
   stage: { fontSize: 13, fontWeight: "600" },
   trail: { flexDirection: "row", flexWrap: "wrap" },
@@ -728,23 +850,25 @@ const styles = StyleSheet.create({
   hunk: { gap: 2 },
   hunkHeader: { fontSize: 11, fontFamily: "monospace" },
   code: { fontSize: 12, fontFamily: "monospace" },
-  document: { gap: 10 },
-  documentTitle: { fontSize: 16, fontWeight: "700" },
-  contents: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, padding: 10, gap: 6 },
+  document: { gap: 12 },
+  documentTitle: { fontSize: 18, lineHeight: 24, fontWeight: "700" },
+  contents: { gap: 6 },
   contentsChapter: { gap: 2 },
   contentsChapterTitle: { fontSize: 13, fontWeight: "600", flexShrink: 1 },
   contentsStop: { fontSize: 12, paddingLeft: 16 },
-  chapter: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, padding: 10, gap: 8 },
+  chapter: { gap: 8 },
   chapterHeader: { flexDirection: "row", alignItems: "center", gap: 6 },
-  chapterTitle: { fontSize: 14, fontWeight: "700" },
-  stop: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: 8, gap: 4 },
-  stopHeader: { flexDirection: "row", alignItems: "center", gap: 8 },
-  stopTitle: { fontSize: 13, fontWeight: "600", flex: 1 },
-  prose: { fontSize: 13 },
+  chapterTitle: { fontSize: 14, fontWeight: "700", flexShrink: 1 },
+  stop: { borderTopWidth: StyleSheet.hairlineWidth, paddingVertical: 8, gap: 6 },
+  stopHeader: { flexDirection: "row", alignItems: "baseline", flexWrap: "wrap", gap: 6 },
+  stopTitle: { fontSize: 13, fontWeight: "700", flexGrow: 1, flexShrink: 1 },
+  prose: { fontSize: 13, lineHeight: 19 },
   observation: { borderRadius: 6, padding: 8, gap: 2 },
   observationHeader: { flexDirection: "row", alignItems: "center", gap: 6 },
   observationKind: { fontSize: 11, fontWeight: "700" },
   section: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, padding: 10, gap: 6 },
   routineRow: { gap: 2 },
-  documentHunk: { gap: 4 },
+  documentHunk: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, overflow: "hidden" },
+  hunkPath: { fontSize: 12, fontFamily: "monospace", paddingHorizontal: 8, paddingVertical: 5 },
+  anchoredPatch: { padding: 8 },
 });

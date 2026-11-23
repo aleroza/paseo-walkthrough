@@ -869,16 +869,14 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
       );
     }, [client, workspaceId, jobId, refreshStatus]);
 
-    const modelOptions = useMemo(
-      () => [
-        { label: "Default model", value: "" },
-        ...models.map((option) => ({
-          label: `${option.label} (${option.provider})`,
-          value: `${option.provider}/${option.id}`,
-        })),
-      ],
-      [models],
-    );
+    const modelOptions = useMemo(() => {
+      const options = models.map(({ label, provider, id }) => ({
+        label: `${label} (${provider})`,
+        value: `${provider}/${id}`,
+      }));
+      const automatic = options.find(({ value }) => value === defaultModel);
+      return [{ label: automatic ? `Auto · ${automatic.label}` : "Auto", value: "" }, ...options];
+    }, [defaultModel, models]);
 
     const languageOptions = useMemo(
       () => LANGUAGES.map((tag) => ({ label: tag === "ru" ? "Русский" : LANGUAGE_NAMES[tag], value: tag })),
@@ -986,7 +984,7 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
                 icon="Sparkles"
                 value={model ?? ""}
                 groups={[{ options: modelOptions }]}
-                displayValue={model ? modelLabel ?? model : narrowToolbar ? "Default" : undefined}
+                displayValue={model ? modelLabel ?? model : "Auto"}
                 menuWidth={276}
                 triggerWidth={narrowToolbar ? 108 : 220}
                 align="end"

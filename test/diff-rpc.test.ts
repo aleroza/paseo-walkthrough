@@ -151,6 +151,7 @@ describe("walkthrough.commits", () => {
     const result = await callCommits(repo);
     expect(result).toEqual({
       commits: [{ hash: head, subject: "Update app" }, { hash: initial, subject: "init" }],
+      repository: true,
       error: null,
     });
     const selected = await callDiff(repo, { scope: "commit", commit: result.commits[0].hash });
@@ -161,7 +162,13 @@ describe("walkthrough.commits", () => {
     const repo = await mkdtemp(join(tmpdir(), "walkthrough-repo-"));
     onTestFinished(() => rm(repo, { recursive: true, force: true }));
     await git(repo, ["init", "-q", "-b", "main", "."]);
-    expect(await callCommits(repo)).toEqual({ commits: [], error: null });
+    expect(await callCommits(repo)).toEqual({ commits: [], repository: true, error: null });
+  });
+
+  it("distinguishes a workspace outside Git from a repository without commits", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "walkthrough-plain-"));
+    onTestFinished(() => rm(dir, { recursive: true, force: true }));
+    expect(await callCommits(dir)).toEqual({ commits: [], repository: false, error: null });
   });
 });
 

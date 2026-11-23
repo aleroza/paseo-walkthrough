@@ -54,9 +54,9 @@ export default function contribute(server: PluginServerContext) {
   server.handle(commitsRpc, async ({ workspaceId }, { paseo }) => {
     try {
       const directory = await resolveWorkspaceDirectory(paseo, workspaceId);
-      return { commits: await listRecentCommits(directory), error: null };
+      return { ...await listRecentCommits(directory), error: null };
     } catch (error) {
-      return { commits: [], error: message(error) };
+      return { commits: [], repository: null, error: message(error) };
     }
   });
 

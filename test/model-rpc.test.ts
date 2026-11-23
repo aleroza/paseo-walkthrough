@@ -339,13 +339,13 @@ describe("walkthrough.generate with a chosen model and language", () => {
     const fake = fakePaseo(repo);
 
     const generated = (await handlerFor(handlers, generateRpc.name)(
-      { workspaceId: "ws-1", scope: "all", model: "test/model-2", language: "de" },
+      generateRpc.input.parse({ workspaceId: "ws-1", scope: "all", model: "test/model-2", language: "ru" }),
       { paseo: fake.paseo },
     )) as { jobId: string };
 
     await waitFor(handlers, fake.paseo, generated.jobId, () => fake.providers.length > 0);
     expect(fake.providers[0]).toBe("test/model-2");
-    expect(fake.systemPrompts[0]).toContain("Write all prose in German");
+    expect(fake.systemPrompts[0]).toContain("Write all prose in Russian");
 
     fake.release(modelAnswer(["h1"]));
     const finished = await waitForTerminal(handlers, fake.paseo, generated.jobId);

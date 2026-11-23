@@ -25,6 +25,7 @@ export const commitsRpc = defineRpc({
   input: z.object({ workspaceId: z.string() }),
   output: z.object({
     commits: z.array(commitOptionSchema),
+    repository: z.boolean().nullable().default(null),
     error: z.string().nullable(),
   }),
 });

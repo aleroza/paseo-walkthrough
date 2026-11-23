@@ -2,7 +2,7 @@ import { stat } from "node:fs/promises";
 import type { WalkthroughScope } from "../shared/constants";
 import type { CommitOption, Diff, DiffFile } from "../shared/types";
 import { detectBaseBranch } from "./branch";
-import { git, gitOutput } from "./git";
+import { git, gitOutput, type GitResult } from "./git";
 import { isGeneratedArtifact } from "./generated";
 import { parsePatch } from "./patch";
 
@@ -25,9 +25,14 @@ const emptyDiff = (repository: boolean): Diff => ({ files: [], hunkCount: 0, fil
 const COMMIT_HASH = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const PATCH_OPTIONS = ["--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"];
 
-export async function listRecentCommits(directory: string): Promise<CommitOption[]> {
+function isNotRepository(result: GitResult): boolean {
+  return result.code === 128 && /^fatal: not a git repository\b/m.test(result.stderr);
+}
+
+export async function listRecentCommits(directory: string): Promise<{ commits: CommitOption[]; repository: boolean }> {
   const head = await git(directory, ["rev-parse", "--verify", "--quiet", "HEAD"]);
-  if (head.code === 1) return [];
+  if (isNotRepository(head)) return { commits: [], repository: false };
+  if (head.code === 1) return { commits: [], repository: true };
   gitOutput(head, "rev-parse");
 
   const result = await git(directory, ["log", "-50", "-z", "--no-show-signature", "--format=%H%x00%s", "HEAD", "--"]);
@@ -36,7 +41,7 @@ export async function listRecentCommits(directory: string): Promise<CommitOption
   for (let i = 0; i + 1 < fields.length - 1; i += 2) {
     commits.push({ hash: fields[i], subject: fields[i + 1] });
   }
-  return commits;
+  return { commits, repository: true };
 }
 
 /** Collects the working tree of a workspace with git. Nothing is written to the project. */
@@ -45,7 +50,7 @@ export async function collectDiff(directory: string, scope: WalkthroughScope, co
   if (!info.isDirectory()) throw new Error(`The workspace path ${directory} is not a directory.`);
 
   const repository = await git(directory, ["rev-parse", "--show-toplevel"]);
-  if (repository.code === 128 && /^fatal: not a git repository\b/m.test(repository.stderr)) {
+  if (isNotRepository(repository)) {
     return { diff: emptyDiff(false), base: null, root: null };
   }
   const root = gitOutput(repository, "rev-parse").replace(/\r?\n$/, "");

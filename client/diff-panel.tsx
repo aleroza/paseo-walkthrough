@@ -1,7 +1,7 @@
 import type { PluginClientContext, PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
 import { useTabState } from "@getpaseo/plugin/client";
-import { Icon, Modal, ScrollView, SettingsSelect, TextInput } from "@getpaseo/plugin/client/ui";
-import type { ComponentRef, Ref } from "react";
+import { Icon, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
+import type { ComponentRef } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
@@ -12,6 +12,7 @@ import type { Chapter, CommitOption, Diff, DiffFile, Hunk, JobStatus, ModelOptio
 import { panelStateSchema } from "../shared/types";
 import { stopAnchorId, useReadingNavigation } from "./reading-navigation";
 import { DiffSections, sectionLabel } from "./diff-sections";
+import { ToolbarSelect } from "./toolbar-select";
 import { findWalkthroughMatches, hunkBodyLines, searchAnchorId, searchFields, SearchText, WalkthroughSearch, type WalkthroughMatch } from "./walkthrough-search";
 
 const POLL_MS = 4_000;
@@ -21,13 +22,21 @@ const CONTENTS_MIN_PANEL_WIDTH = 720;
 
 type Colors = PluginTheme["colors"];
 
-const SOURCES: { scope: WalkthroughScope; label: string }[] = [
-  { scope: "all", label: "All changes" },
-  { scope: "staged", label: "Staged" },
-  { scope: "unstaged", label: "Unstaged" },
-  { scope: "branch", label: "Branch" },
-  { scope: "commit", label: "Commit" },
+const SOURCE_GROUPS = [
+  { label: "Working tree", options: [
+    { value: "all", label: "All uncommitted" },
+    { value: "staged", label: "Staged" },
+    { value: "unstaged", label: "Unstaged" },
+  ] },
+  { options: [{ value: "branch", label: "This branch" }] },
+  { options: [{ value: "commit", label: "Commit" }] },
+] as const;
+const SOURCES = [
+  ...SOURCE_GROUPS[0].options,
+  ...SOURCE_GROUPS[1].options,
+  ...SOURCE_GROUPS[2].options,
 ];
+type ToolbarMenu = "scope" | "commit" | "model" | "language";
 
 const EMPTY: Record<WalkthroughScope, string> = {
   all: "No changes in the working tree.",
@@ -94,39 +103,32 @@ function ToolbarButton({
   icon,
   onPress,
   colors,
-  primary = false,
   disabled = false,
   expanded,
-  selected,
-  buttonRef,
 }: {
   label?: string;
   accessibilityLabel?: string;
   icon?: string;
   onPress: () => void;
   colors: Colors;
-  primary?: boolean;
   disabled?: boolean;
   expanded?: boolean;
-  selected?: boolean;
-  buttonRef?: Ref<ComponentRef<typeof View>>;
 }) {
   const [focused, setFocused] = useState(false);
-  const color = primary && !disabled ? colors.accentForeground : disabled ? colors.foregroundMuted : colors.foreground;
+  const color = disabled ? colors.foregroundMuted : colors.foreground;
 
   return (
     <Pressable
-      ref={buttonRef}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
-      accessibilityState={{ disabled, expanded, selected }}
+      accessibilityState={{ disabled, expanded }}
       disabled={disabled}
       onFocus={() => setFocused(true)}
       onBlur={() => setFocused(false)}
       onPress={onPress}
       style={({ pressed }) => [styles.action, {
         borderColor: focused ? colors.foreground : colors.border,
-        backgroundColor: primary && !disabled ? colors.accent : pressed || expanded ? colors.surface2 : colors.surface1,
+        backgroundColor: pressed || expanded ? colors.surface2 : colors.surface1,
       }]}
     >
       {icon ? <Icon name={icon} size={14} color={color} /> : null}
@@ -563,16 +565,19 @@ type DiffSummaryProps = {
   base: string | null;
   error: string | null;
   empty: string | null;
+  outsideRepository: boolean;
   colors: Colors;
 };
 
-function DiffSummary({ diff, base, error, empty, colors }: DiffSummaryProps) {
+function DiffSummary({ diff, base, error, empty, outsideRepository, colors }: DiffSummaryProps) {
+  const fileCount = diff?.fileCount ?? 0;
+  const hunkCount = diff?.hunkCount ?? 0;
   return (
     <>
       {error ? <Text style={[styles.meta, { color: colors.statusDanger }]}>{error}</Text> : null}
-      {diff ? (
+      {diff || outsideRepository ? (
         <Text style={[styles.summary, { color: colors.foreground }]}>
-          {`${diff.fileCount} ${diff.fileCount === 1 ? "file" : "files"}, ${diff.hunkCount} ${diff.hunkCount === 1 ? "hunk" : "hunks"}`}
+          {`${fileCount} ${fileCount === 1 ? "file" : "files"}, ${hunkCount} ${hunkCount === 1 ? "hunk" : "hunks"}`}
         </Text>
       ) : null}
       {base ? <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{`Compared against ${base}`}</Text> : null}
@@ -609,8 +614,9 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
     const { scope, commit, model, language } = panelState;
     const storedState = useRef(tab.state);
     const [draft, setDraft] = useState(commit ?? "");
-    const [history, setHistory] = useState<{ commits: CommitOption[]; error: string | null } | null>(null);
+    const [history, setHistory] = useState<{ commits: CommitOption[]; repository: boolean | null; error: string | null } | null>(null);
     const [diff, setDiff] = useState<Diff | null>(null);
+    const [diffRefresh, setDiffRefresh] = useState(0);
     const [base, setBase] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [models, setModels] = useState<ModelOption[]>([]);
@@ -628,9 +634,19 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
     const { document, staleness = null, source, documentMetadata } = displayed ?? {};
     const [starting, setStarting] = useState(false);
     const [cancelling, setCancelling] = useState(false);
-    const [openMenu, setOpenMenu] = useState<"source" | "options" | null>(null);
+    const [showCommitHash, setShowCommitHash] = useState(false);
     const [sourceDiffOpen, setSourceDiffOpen] = useState(false);
-    const sourceButton = useRef<ComponentRef<typeof View>>(null);
+    const panel = useRef<ComponentRef<typeof View>>(null);
+    const [panelWidth, setPanelWidth] = useState(0);
+    const [openMenu, setOpenMenu] = useState<ToolbarMenu | null>(null);
+
+    function menuProps(menu: ToolbarMenu) {
+      return {
+        colors, panel, panelWidth,
+        open: openMenu === menu,
+        setOpen: (open: boolean) => setOpenMenu(open ? menu : null),
+      };
+    }
 
     const refreshStatus = useCallback(() => {
       statusVersion.current += 1;
@@ -703,7 +719,7 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
           if (active) setHistory(result);
         },
         (cause: unknown) => {
-          if (active) setHistory({ commits: [], error: cause instanceof Error ? cause.message : String(cause) });
+          if (active) setHistory({ commits: [], repository: null, error: cause instanceof Error ? cause.message : String(cause) });
         },
       );
       return () => {
@@ -740,7 +756,7 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
         active = false;
         clearTimeout(timer);
       };
-    }, [client, workspaceId, scope, commit]);
+    }, [client, workspaceId, scope, commit, diffRefresh]);
 
     const running = stage !== null && RUNNING_STAGES.includes(stage);
     const regenerate =
@@ -749,11 +765,10 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
       (scope !== "commit" || source.commit === commit?.toLowerCase()) &&
       documentMetadata?.model === (model ?? defaultModel) &&
       documentMetadata?.language === language;
-    const generateAction = starting || running ? "Generating" : regenerate ? "Regenerate" : "Generate";
 
     const documentHunks = displayed?.hunks;
     const hunks = useMemo(() => new Map(documentHunks?.map((hunk) => [hunk.id, hunk])), [documentHunks]);
-    const displayedSource = SOURCES.find(({ scope }) => scope === source?.scope)?.label ?? "Unknown source";
+    const displayedSource = SOURCES.find(({ value }) => value === source?.scope)?.label ?? "Unknown source";
     const displayedCommit = source?.scope === "commit" ? ` ${source.commit ?? "unknown"}` : "";
     const displayedModel = documentMetadata?.model ?? "Unknown model";
     const displayedLanguage = documentMetadata?.language ? LANGUAGE_NAMES[documentMetadata.language] : "Unknown language";
@@ -866,116 +881,152 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
     );
 
     const languageOptions = useMemo(
-      () => LANGUAGES.map((tag) => ({ label: LANGUAGE_NAMES[tag], value: tag })),
+      () => LANGUAGES.map((tag) => ({ label: tag === "ru" ? "Русский" : LANGUAGE_NAMES[tag], value: tag })),
       [],
     );
 
     const modelGone =
       model !== null && models.length > 0 && !models.some((option) => `${option.provider}/${option.id}` === model);
     const needsCommit = scope === "commit" && !commit;
-    const generateDisabled = starting || running || needsCommit;
+    const outsideRepository = diff?.repository === false || (scope === "commit" && history?.repository === false);
+    const historyError = scope === "commit" ? history?.error ?? null : null;
+    const noChanges = !error && !needsCommit && !!diff?.repository && diff.files.length === 0 && (scope !== "branch" || !!base);
+    const generateDisabled = starting || running || needsCommit || noChanges || outsideRepository;
 
-    const empty = error || needsCommit
+    const empty = error
       ? null
-      : !diff
-        ? PENDING[scope]
-        : !diff.repository
-          ? "This workspace is not a git repository, so there is nothing to walk through."
-          : diff.files.length === 0
-            ? scope === "branch" && !base
-              ? NO_BASE
-              : EMPTY[scope]
-            : null;
+      : outsideRepository
+        ? "This workspace is not a git repository, so there is nothing to walk through."
+        : needsCommit
+          ? null
+          : !diff
+            ? PENDING[scope]
+            : diff.files.length === 0
+              ? scope === "branch" && !base
+                ? NO_BASE
+                : EMPTY[scope]
+              : null;
 
-    const sourceLabel = SOURCES.find((source) => source.scope === scope)?.label ?? scope;
-    const sourceMenuOpen = openMenu === "source";
-    const optionsOpen = openMenu === "options";
-    const diffSummary = { diff, base, error, empty, colors };
+    const sourceLabel = SOURCES.find(({ value }) => value === scope)?.label ?? scope;
+    const diffSummary = { diff, base, error: error ?? historyError, empty, outsideRepository, colors };
+    const narrowToolbar = panelWidth > 0 && panelWidth < 500;
+    const modelLabel = models.find(({ provider, id }) => `${provider}/${id}` === model)?.label;
+    const generateLabel = regenerate ? "Regenerate" : "Generate";
+    const sourceDiffButton = (
+      <ToolbarButton
+        accessibilityLabel="View source diff"
+        icon="FileDiff"
+        colors={colors}
+        disabled={needsCommit}
+        onPress={() => {
+          setOpenMenu(null);
+          setSourceDiffOpen(true);
+        }}
+      />
+    );
 
     return (
-      <View style={[styles.panel, { backgroundColor: colors.surface0 }]}>
-        <View style={[styles.toolbar, { borderColor: colors.border }]}>
-          <View style={styles.actions}>
-            <ToolbarButton
-              label={sourceLabel}
-              accessibilityLabel={`Source: ${sourceLabel}`}
-              icon={sourceMenuOpen ? "ChevronUp" : "ChevronDown"}
-              colors={colors}
-              expanded={sourceMenuOpen}
-              buttonRef={sourceButton}
-              onPress={() => setOpenMenu(sourceMenuOpen ? null : "source")}
-            />
-            <ToolbarButton
-              label={generateAction === "Generating" ? "Generating…" : generateAction}
-              accessibilityLabel={`${generateAction} the walkthrough`}
-              colors={colors}
-              primary
-              disabled={generateDisabled}
-              onPress={generate}
-            />
-            {running && jobId ? (
-              <ToolbarButton
-                label={cancelling ? "Cancelling…" : "Cancel"}
-                accessibilityLabel="Cancel the walkthrough"
-                colors={colors}
-                disabled={cancelling}
-                onPress={cancel}
+      <View ref={panel} collapsable={false} onLayout={(event) => {
+        const width = event.nativeEvent.layout.width;
+        if (width !== panelWidth) {
+          setPanelWidth(width);
+          setOpenMenu(null);
+        }
+      }} style={[styles.panel, { backgroundColor: colors.surface0 }]}>
+        <View style={[styles.toolbar, { borderColor: colors.border }, openMenu && styles.toolbarActive]}>
+          <View style={styles.toolbarRow}>
+            <View style={[styles.actions, styles.toolbarGroup, (openMenu === "scope" || openMenu === "commit") && styles.toolbarGroupActive]}>
+              <ToolbarSelect
+                {...menuProps("scope")}
+                label="Review scope"
+                value={scope}
+                groups={SOURCE_GROUPS}
+                onChange={(value) => choose({ scope: value })}
               />
-            ) : null}
-            <ToolbarButton
-              label="Diff"
-              accessibilityLabel="View source diff"
-              icon="FileDiff"
-              colors={colors}
-              disabled={needsCommit}
-              onPress={() => setSourceDiffOpen(true)}
-            />
-            <ToolbarButton
-              accessibilityLabel="Walkthrough options"
-              icon="Settings"
-              colors={colors}
-              expanded={optionsOpen}
-              onPress={() => setOpenMenu(optionsOpen ? null : "options")}
-            />
-          </View>
-          {sourceMenuOpen ? (
-            <View style={styles.actions}>
-              {SOURCES.map((source) => (
+              {scope === "commit" ? (
+                <>
+                  <ToolbarSelect
+                    {...menuProps("commit")}
+                    label="Choose commit"
+                    value={commit ?? ""}
+                    groups={[{ options: commitOptions.filter(({ value }) => value !== "") }]}
+                    displayValue={commit ? commit.slice(0, 8) : commitOptions[0]?.label}
+                    menuWidth={360}
+                    disabled={!history?.commits.length}
+                    onChange={selectCommit}
+                  />
+                  <ToolbarButton
+                    accessibilityLabel={showCommitHash ? "Hide hash input" : "Enter hash"}
+                    icon="Hash"
+                    colors={colors}
+                    expanded={showCommitHash}
+                    onPress={() => {
+                      setOpenMenu(null);
+                      setShowCommitHash((shown) => !shown);
+                    }}
+                  />
+                </>
+              ) : null}
+              {narrowToolbar ? sourceDiffButton : null}
+            </View>
+            <View style={[styles.actions, styles.toolbarGroup, styles.toolbarEnd, (openMenu === "language" || openMenu === "model") && styles.toolbarGroupActive]}>
+              <ToolbarSelect
+                {...menuProps("language")}
+                label="Language"
+                icon="Globe"
+                value={language}
+                groups={[{ options: languageOptions }]}
+                triggerWidth={narrowToolbar ? 104 : undefined}
+                align="end"
+                onChange={(value) => choose({ language: value })}
+              />
+              <ToolbarSelect
+                {...menuProps("model")}
+                label="Model"
+                icon="Sparkles"
+                value={model ?? ""}
+                groups={[{ options: modelOptions }]}
+                displayValue={model ? modelLabel ?? model : narrowToolbar ? "Default" : undefined}
+                menuWidth={276}
+                triggerWidth={narrowToolbar ? 108 : 220}
+                align="end"
+                onChange={(value) => choose({ model: value === "" ? null : value })}
+              />
+              {running && jobId ? (
                 <ToolbarButton
-                  key={source.scope}
-                  label={source.label}
+                  label={cancelling ? "Cancelling…" : "Cancel"}
+                  accessibilityLabel="Cancel the walkthrough"
+                  icon="Square"
                   colors={colors}
-                  primary={source.scope === scope}
-                  selected={source.scope === scope}
+                  disabled={cancelling}
+                  onPress={cancel}
+                />
+              ) : (
+                <ToolbarButton
+                  label={starting ? "Generating…" : narrowToolbar ? generateLabel : `${generateLabel} walkthrough`}
+                  accessibilityLabel={starting ? "Generating walkthrough" : `${generateLabel} walkthrough`}
+                  icon={narrowToolbar ? undefined : "Workflow"}
+                  colors={colors}
+                  disabled={generateDisabled}
                   onPress={() => {
-                    choose({ scope: source.scope });
-                    sourceButton.current?.focus();
                     setOpenMenu(null);
+                    generate();
                   }}
                 />
-              ))}
+              )}
+              {narrowToolbar ? null : sourceDiffButton}
             </View>
-          ) : null}
+          </View>
           {scope === "commit" ? (
             <>
-              <SettingsSelect
-                label="Commit"
-                value={commit ?? ""}
-                options={commitOptions}
-                disabled={!history?.commits.length}
-                error={history?.error}
-                onValueChange={(hash) => {
-                  if (hash) selectCommit(hash);
-                }}
-              />
-              {!document || sourceMenuOpen ? (
+              {showCommitHash ? (
                 <View style={styles.commit}>
                   <TextInput
                     value={draft}
                     onChangeText={setDraft}
                     onSubmitEditing={applyCommit}
                     accessibilityLabel="Full commit hash"
-                    placeholder="Or enter a full commit hash"
+                    placeholder="Enter a full commit hash"
                     placeholderTextColor={colors.foregroundMuted}
                     autoCapitalize="none"
                     autoCorrect={false}
@@ -986,23 +1037,7 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
               ) : null}
             </>
           ) : null}
-          {optionsOpen ? (
-            <View style={[styles.options, { backgroundColor: colors.surface1, borderColor: colors.border }]}>
-              <SettingsSelect
-                label="Model"
-                value={model ?? ""}
-                options={modelOptions}
-                onValueChange={(value) => choose({ model: value === "" ? null : value })}
-              />
-              <SettingsSelect
-                label="Language"
-                value={language}
-                options={languageOptions}
-                onValueChange={(value) => choose({ language: value })}
-              />
-            </View>
-          ) : null}
-          {modelsError && (optionsOpen || !document) ? <Text style={[styles.meta, { color: colors.statusDanger }]}>{modelsError}</Text> : null}
+          {modelsError ? <Text style={[styles.meta, { color: colors.statusDanger }]}>{modelsError}</Text> : null}
           {modelGone ? (
             <Text style={[styles.meta, { color: colors.statusWarning }]}>The selected model is unavailable.</Text>
           ) : null}
@@ -1024,6 +1059,7 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
           ) : null}
           {document ? <Text style={[styles.meta, { color: colors.foregroundMuted }]}>{documentDetails}</Text> : null}
         </View>
+        {openMenu ? <Pressable accessible={false} tabIndex={-1} style={styles.dismissMenu} onPress={() => setOpenMenu(null)} /> : null}
         {document ? (
           <DocumentReader
             key={documentMetadata?.jobId ?? workspaceId}
@@ -1035,6 +1071,15 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
             query={query}
             setQuery={setQuery}
           />
+        ) : noChanges && !historyError ? (
+          <View style={styles.emptyState}>
+            <Icon name="Info" size={23} color={colors.foregroundMuted} />
+            <Text style={[styles.summary, { color: colors.foreground }]}>Nothing to review</Text>
+            <Text style={[styles.emptyDescription, { color: colors.foregroundMuted }]}>There are no changes in this scope yet.</Text>
+            <View>
+              <ToolbarButton label="Refresh" colors={colors} onPress={() => setDiffRefresh((version) => version + 1)} />
+            </View>
+          </View>
         ) : (
           <ScrollView style={styles.readingScroll} contentContainerStyle={[styles.content, layout.compact && styles.contentCompact]}>
             <DiffSummary {...diffSummary} />
@@ -1059,10 +1104,17 @@ export function createDiffPanel(client: PluginClientContext, commandJobListeners
 const styles = StyleSheet.create({
   panel: { flex: 1, minHeight: 0, minWidth: 0 },
   toolbar: { borderBottomWidth: StyleSheet.hairlineWidth, padding: 8, gap: 8 },
+  toolbarActive: { zIndex: 2 },
+  toolbarRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "flex-start", justifyContent: "space-between", gap: 4 },
+  toolbarGroup: { maxWidth: "100%" },
+  toolbarGroupActive: { zIndex: 1 },
+  toolbarEnd: { marginLeft: "auto", justifyContent: "flex-end" },
+  dismissMenu: { ...StyleSheet.absoluteFillObject, zIndex: 1 },
+  emptyState: { flex: 1, alignItems: "center", justifyContent: "center", padding: 16, gap: 12 },
+  emptyDescription: { textAlign: "center", fontSize: 13 },
   actions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 4 },
-  action: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, minHeight: 30, maxWidth: "100%", borderWidth: 1, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 4 },
+  action: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, minHeight: 33, maxWidth: "100%", borderWidth: 1, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 4 },
   actionLabel: { fontSize: 12, fontWeight: "600", flexShrink: 1 },
-  options: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 8 },
   reader: { flex: 1, minHeight: 0 },
   readerBody: { flex: 1, minHeight: 0, flexDirection: "row" },
   readingScroll: { flex: 1, minHeight: 0, minWidth: 0 },

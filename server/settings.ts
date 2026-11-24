@@ -5,7 +5,7 @@ import type { WorkspaceSettings } from "../shared/types";
 import { workspaceSettingsSchema } from "../shared/types";
 import { writePrivateFile } from "./store";
 
-/** The choice a workspace falls back to: everything, the daemon's default model, English. */
+/** Initial settings for a workspace that has yet to choose a model. */
 export const DEFAULT_SETTINGS: WorkspaceSettings = { scope: "all", model: null, language: "en" };
 
 const settingsDirectory = (dataDirectory: string) => join(dataDirectory, "settings");

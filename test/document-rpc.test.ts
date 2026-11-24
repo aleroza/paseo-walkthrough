@@ -211,7 +211,7 @@ describe("the walkthrough document", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo);
     const [anchor] = await hunkIdsOf(handlers, fake.paseo);
-    const { jobId } = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const { jobId } = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     fake.release(answer({ chapters: [{ stops: [oneStop(["h1"], "Updates the value.")] }] }));
     const finished = await waitForTerminal(handlers, fake.paseo, jobId);
     expect(finished.job?.state).toBe("done");
@@ -245,7 +245,7 @@ describe("the walkthrough document", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo);
     const original = await hunkIdsOf(handlers, fake.paseo);
-    const { jobId } = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const { jobId } = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     fake.release(answer({
       chapters: [{
         stops: [
@@ -300,7 +300,7 @@ describe("the walkthrough document", () => {
     const ids = await hunkIdsOf(handlers, fake.paseo);
     expect(ids).toHaveLength(2);
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     await waitFor(handlers, fake.paseo, generated.jobId, (status) => status.job?.state === "asking");
     fake.release(
       answer({
@@ -368,7 +368,7 @@ describe("the walkthrough document", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo);
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     await waitFor(handlers, fake.paseo, generated.jobId, (status) => status.job?.state === "asking");
     fake.release(
       answer({
@@ -417,7 +417,7 @@ describe("the walkthrough document", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo);
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await waitFor(handlers, fake.paseo, generated.jobId, (status) => fake.promptCount() > attempt);
       fake.release(

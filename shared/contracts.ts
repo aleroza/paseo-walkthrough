@@ -71,7 +71,6 @@ export const modelsRpc = defineRpc({
   }),
   output: z.object({
     models: z.array(modelOptionSchema),
-    defaultModel: z.string().nullable().default(null),
     error: z.string().nullable(),
   }),
 });

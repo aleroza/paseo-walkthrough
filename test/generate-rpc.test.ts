@@ -293,7 +293,7 @@ describe("walkthrough cache", () => {
     const generate = handlerFor(handlers, generateRpc.name);
     const status = handlerFor(handlers, statusRpc.name);
     const cancel = handlerFor(handlers, cancelRpc.name);
-    const request = { workspaceId, scope: "all" };
+    const request = { workspaceId, scope: "all", model: "test/model-1" };
     const context = { paseo: fake.paseo };
     const { rename: renameFile } = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
     const cache = join(homeRoot, "home", "plugin-data", "walkthrough", "cache", "workspaces");
@@ -401,13 +401,13 @@ describe("walkthrough cache", () => {
     await writeFile(path, initialChange);
     const first = load();
     const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
-    const request = { workspaceId: "ws-1", scope: "all" };
+    const request = { workspaceId: "ws-1", scope: "all", model: "test/model-1" };
     const generated = (await handlerFor(first.handlers, generateRpc.name)(request, { paseo: fake.paseo })) as { jobId: string };
     fake.release(modelAnswer(["h1"]));
     const finished = await waitForTerminal(first.handlers, fake.paseo, generated.jobId);
     expect(finished.job?.state).toBe("done");
     expect(statusRpc.output.parse(finished)).toMatchObject({
-      job: { request: { scope: "all", model: null, language: "en" } },
+      job: { request: { scope: "all", model: "test/model-1", language: "en" } },
       source: { scope: "all" },
       documentMetadata: { jobId: generated.jobId, model: "test/model-1", language: "en" },
     });
@@ -480,7 +480,7 @@ describe("walkthrough cache", () => {
     const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
     const { handlers, cleanup } = load();
     const generate = handlerFor(handlers, generateRpc.name);
-    const request = { workspaceId: "ws-1", scope: "all" };
+    const request = { workspaceId: "ws-1", scope: "all", model: "test/model-1" };
     const generateForValue = async (value: number, title: string) => {
       await writeFile(join(repo, "app.ts"), `const a = 1;\nconst b = ${value};\nconst c = 3;\n`);
       const { jobId } = await generate(request, { paseo: fake.paseo }) as { jobId: string };
@@ -541,7 +541,7 @@ describe("walkthrough cache", () => {
     const { handlers, cleanup } = load();
     onTestFinished(cleanup);
     const replacement = generateRpc.output.parse(await handlerFor(handlers, generateRpc.name)(
-      { workspaceId: "ws-1", scope: "unstaged", language: "fr" }, context,
+      { workspaceId: "ws-1", scope: "unstaged", model: "test/model-1", language: "fr" }, context,
     ));
     await waitUntil(() => fake.promptCount() === 2);
     const retained = {
@@ -552,7 +552,7 @@ describe("walkthrough cache", () => {
     };
     expect(statusRpc.output.parse(await callStatus(handlers, fake.paseo, replacement.jobId))).toMatchObject({
       ...retained,
-      job: { id: replacement.jobId, state: "asking", request: { scope: "unstaged", model: null, language: "fr" } },
+      job: { id: replacement.jobId, state: "asking", request: { scope: "unstaged", model: "test/model-1", language: "fr" } },
     });
 
     if (outcome === "cancelled") {
@@ -577,7 +577,7 @@ describe("walkthrough cache", () => {
     onTestFinished(cleanup);
     const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
     const context = { paseo: fake.paseo };
-    const request = { workspaceId: "ws-1", scope: "all" };
+    const request = { workspaceId: "ws-1", scope: "all", model: "test/model-1" };
     const generate = handlerFor(handlers, generateRpc.name);
 
     const original = generateRpc.output.parse(await generate(request, context));
@@ -614,7 +614,7 @@ describe("walkthrough.generate", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo, { provider: "codex", backgroundAgentInWorkspace: false });
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "codex/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     await waitUntil(() => fake.promptCount() > 0);
     const creation = fake.creations.at(-1);
     expect(creation?.prompt).toContain("Change digest:");
@@ -637,7 +637,7 @@ describe("walkthrough.generate", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo, { provider: "opencode", backgroundAgentInWorkspace: true });
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "opencode/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     await waitUntil(() => fake.promptCount() === 1);
     fake.release({ error: "Invalid OpenCode structured output: data/chapters must be array" });
 
@@ -659,7 +659,7 @@ describe("walkthrough.generate", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     expect(typeof generated.jobId).toBe("string");
 
     const asking = await waitFor(handlers, fake.paseo, generated.jobId, (status) => status.job?.state === "asking");
@@ -688,7 +688,7 @@ describe("walkthrough.generate", () => {
     };
     const hunkId = diff.diff?.files[0]?.hunks[0]?.id ?? "";
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     await waitFor(handlers, fake.paseo, generated.jobId, (status) => status.job?.state === "asking");
     fake.release(modelAnswer(["h1"]));
     const finished = await waitForTerminal(handlers, fake.paseo, generated.jobId);
@@ -703,7 +703,7 @@ describe("walkthrough.generate", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo, { provider: "claude", backgroundAgentInWorkspace: true });
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "claude/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     await waitFor(handlers, fake.paseo, generated.jobId, (status) => status.job?.state === "asking");
     fake.release("this is not json at all");
 
@@ -729,7 +729,7 @@ describe("walkthrough.generate", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await waitFor(handlers, fake.paseo, generated.jobId, (status) => fake.promptCount() > attempt);
       fake.release("this is not json at all");
@@ -748,7 +748,7 @@ describe("walkthrough.generate", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     await waitFor(handlers, fake.paseo, generated.jobId, (status) => status.job?.state === "asking");
     fake.release(
       JSON.stringify({
@@ -773,7 +773,7 @@ describe("walkthrough.generate", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     await waitUntil(() => fake.promptCount() > 0);
 
     const creation = fake.creations[0];
@@ -790,7 +790,7 @@ describe("walkthrough.generate", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     await waitUntil(() => fake.promptCount() > 0);
 
     expect(fake.creations[0]?.workspaceId).toBeUndefined();
@@ -802,7 +802,7 @@ describe("walkthrough.generate", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo, { backgroundAgentInWorkspace: false });
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     await waitUntil(() => fake.promptCount() > 0);
 
     expect(fake.creations).toHaveLength(1);
@@ -816,7 +816,7 @@ describe("walkthrough.generate", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true, holdModelResolution: true });
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     // The cancel lands while the job is still resolving the model, before the agent exists.
     await waitUntil(() => fake.modelResolutions() > 0);
     const cancelled = (await handlerFor(handlers, cancelRpc.name)({ workspaceId: "ws-1", jobId: generated.jobId }, { paseo: fake.paseo })) as {
@@ -842,7 +842,7 @@ describe("walkthrough.generate", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     await waitFor(handlers, fake.paseo, generated.jobId, (status) => status.job?.state === "asking");
     fake.release(modelAnswer(["h1"]));
     const finished = await waitForTerminal(handlers, fake.paseo, generated.jobId);
@@ -858,7 +858,7 @@ describe("walkthrough.generate", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo, { backgroundAgentInWorkspace: true });
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await waitFor(handlers, fake.paseo, generated.jobId, (status) => fake.promptCount() > attempt);
       fake.release("this is not json at all");

@@ -31,6 +31,12 @@ export default function contribute(server: PluginServerContext) {
   };
 
   const service = createWalkthroughService({ dataDirectory: dir });
+  const pendingSettings = new Map<string, ReturnType<typeof writeWorkspaceSettings>>();
+
+  async function readSettings(workspaceId: string) {
+    await pendingSettings.get(workspaceId)?.catch(() => undefined);
+    return readWorkspaceSettings(dir, workspaceId);
+  }
 
   server.handle(diffRpc, async ({ workspaceId, scope, commit }, { paseo }) => {
     try {
@@ -44,10 +50,9 @@ export default function contribute(server: PluginServerContext) {
 
   server.handle(modelsRpc, async (_input, { paseo }) => {
     try {
-      const { models, defaultModel } = await listAvailableModels(paseo);
-      return { models: models.map(({ provider, id, label }) => ({ provider, id, label })), defaultModel, error: null };
+      return { models: await listAvailableModels(paseo), error: null };
     } catch (error) {
-      return { models: [], defaultModel: null, error: message(error) };
+      return { models: [], error: message(error) };
     }
   });
 
@@ -62,22 +67,32 @@ export default function contribute(server: PluginServerContext) {
 
   server.handle(settingsRpc, async ({ workspaceId }) => {
     await requireStorage();
-    return { settings: await readWorkspaceSettings(dir, workspaceId) };
+    return { settings: await readSettings(workspaceId) };
   });
 
   server.handle(saveSettingsRpc, async ({ workspaceId, settings }) => {
     await requireStorage();
-    return { settings: await writeWorkspaceSettings(dir, workspaceId, settings) };
+    const previous = pendingSettings.get(workspaceId);
+    const write = Promise.resolve(previous).catch(() => undefined)
+      .then(() => writeWorkspaceSettings(dir, workspaceId, settings));
+    pendingSettings.set(workspaceId, write);
+    try {
+      return { settings: await write };
+    } finally {
+      if (pendingSettings.get(workspaceId) === write) pendingSettings.delete(workspaceId);
+    }
   });
 
   server.handle(generateRpc, async ({ workspaceId, scope, commit, model, language, force }, { paseo }) => {
     await requireStorage();
-    const remembered = await readWorkspaceSettings(dir, workspaceId);
+    const remembered = await readSettings(workspaceId);
+    const selectedModel = (model === undefined ? remembered.model : model)?.trim();
+    if (!selectedModel) throw new Error("Choose a model for the walkthrough first.");
     const jobId = service.start(paseo, {
       workspaceId,
       scope: scope ?? remembered.scope,
       commit: scope === undefined ? commit ?? remembered.commit : commit,
-      model: model === undefined ? remembered.model : model,
+      model: selectedModel,
       language: language ?? remembered.language,
       force,
     });
@@ -93,6 +108,7 @@ export default function contribute(server: PluginServerContext) {
 
   return async () => {
     await service.shutdown();
+    await Promise.allSettled(pendingSettings.values());
     await ready;
   };
 }

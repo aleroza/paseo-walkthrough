@@ -242,7 +242,7 @@ describe("the digest the model reads", () => {
     const { handlers, cleanup } = load();
     onTestFinished(cleanup);
     const fake = fakePaseo(repo);
-    const request = { workspaceId: "ws-1", scope: "all" };
+    const request = { workspaceId: "ws-1", scope: "all", model: "test/model-1" };
     const context = { paseo: fake.paseo };
     const diff = diffRpc.output.parse(await handlerFor(handlers, diffRpc.name)(request, context));
     const [staged, unstaged] = diff.diff!.files.map(({ hunks }) => hunks[0]);
@@ -286,7 +286,7 @@ describe("the digest the model reads", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo);
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     await waitFor(handlers, fake.paseo, generated.jobId, (status) => status.job?.state === "asking");
     const prompt = await waitForPrompt(fake);
     const digest = digestOf(prompt);
@@ -307,7 +307,7 @@ describe("the digest the model reads", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo);
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     await waitFor(handlers, fake.paseo, generated.jobId, (status) => status.job?.state === "asking");
     const prompt = await waitForPrompt(fake);
     expect(prompt).not.toContain("diff --git");
@@ -345,7 +345,7 @@ describe("the digest the model reads", () => {
     expect(diff.diff?.files.map((file) => file.path)).toEqual(["app.ts", "generated/schema.json", "package-lock.json"]);
     expect(diff.diff?.generatedPaths).toEqual(["generated/schema.json", "package-lock.json"]);
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     await waitFor(handlers, fake.paseo, generated.jobId, (status) => status.job?.state === "asking");
     const prompt = await waitForPrompt(fake);
     const digest = digestOf(prompt);
@@ -371,7 +371,7 @@ describe("the digest the model reads", () => {
     };
     const libHunk = diff.diff?.files.find((file) => file.path === "lib.ts")?.hunks[0]?.id ?? "";
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     await waitFor(handlers, fake.paseo, generated.jobId, (status) => status.job?.state === "asking");
     fake.release(answer(["h2"]));
 
@@ -388,7 +388,7 @@ describe("the digest the model reads", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo);
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     const finished = await waitForTerminal(handlers, fake.paseo, generated.jobId);
 
     expect(finished.job?.state).toBe("failed");
@@ -412,7 +412,7 @@ describe("the digest the model reads", () => {
     expect(diff.diff?.files[0]?.binary).toBe(true);
     expect(diff.diff?.files[0]?.hunks).toHaveLength(0);
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as { jobId: string };
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as { jobId: string };
     const finished = await waitForTerminal(handlers, fake.paseo, generated.jobId);
 
     expect(finished.job?.state).toBe("failed");

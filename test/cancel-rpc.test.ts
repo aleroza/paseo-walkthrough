@@ -212,7 +212,7 @@ describe("walkthrough.cancel", () => {
     await writeFile(join(repo, "app.ts"), "const b = 22;\n");
     const { handlers, cleanup } = load();
     const fake = fakePaseo(repo, { ignoresInterrupt: true });
-    await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo });
+    await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo });
     await waitUntil(() => fake.promptCount() > 0);
 
     await cleanup();
@@ -227,7 +227,7 @@ describe("walkthrough.cancel", () => {
     await writeFile(join(repo, "app.ts"), "const b = 22;\n");
     const { handlers, cleanup } = load();
     const fake = fakePaseo(repo, { archiveFailures: 1 });
-    const { jobId } = await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo }) as { jobId: string };
+    const { jobId } = await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo }) as { jobId: string };
     await waitUntil(() => fake.promptCount() > 0);
     fake.release(modelAnswer);
     await waitUntil(() => fake.archived.length > 0);
@@ -248,7 +248,7 @@ describe("walkthrough.cancel", () => {
     await writeFile(join(repo, "app.ts"), "const b = 22;\n");
     const { handlers, cleanup } = load();
     const fake = fakePaseo(repo, { archiveFailures: 2, ignoresInterrupt: true });
-    const { jobId } = await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo }) as { jobId: string };
+    const { jobId } = await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo }) as { jobId: string };
     await waitUntil(() => fake.promptCount() > 0);
     await callCancel(handlers, fake.paseo, jobId);
 
@@ -273,7 +273,7 @@ describe("walkthrough.cancel", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo);
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as {
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as {
       jobId: string;
     };
     await waitUntil(() => fake.promptCount() > 0);
@@ -306,7 +306,7 @@ describe("walkthrough.cancel", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo, { ignoresInterrupt: true });
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as {
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as {
       jobId: string;
     };
     await waitUntil(() => fake.promptCount() > 0);
@@ -330,7 +330,7 @@ describe("walkthrough.cancel", () => {
     const { handlers } = load();
     const fake = fakePaseo(repo);
 
-    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all" }, { paseo: fake.paseo })) as {
+    const generated = (await handlerFor(handlers, generateRpc.name)({ workspaceId: "ws-1", scope: "all", model: "test/model-1" }, { paseo: fake.paseo })) as {
       jobId: string;
     };
     await waitUntil(() => fake.promptCount() > 0);

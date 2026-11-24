@@ -251,7 +251,6 @@ describe("walkthrough.models", () => {
     await cleanup();
 
     expect(result.error).toBeNull();
-    expect(result.defaultModel).toBe("test/model-1");
     expect(result.models).toEqual([
       { provider: "test", id: "model-1", label: "Model 1" },
       { provider: "test", id: "model-2", label: "Model 2" },
@@ -301,7 +300,7 @@ describe("walkthrough.generate with a chosen model and language", () => {
     const fake = fakePaseo(repo);
     const context = { paseo: fake.paseo };
     await handlerFor(handlers, saveSettingsRpc.name)(
-      saveSettingsRpc.input.parse({ workspaceId: "ws-1", settings: { scope: "commit", commit } }),
+      saveSettingsRpc.input.parse({ workspaceId: "ws-1", settings: { scope: "commit", commit, model: "test/model-2" } }),
       context,
     );
 
@@ -320,9 +319,13 @@ describe("walkthrough.generate with a chosen model and language", () => {
     const fake = fakePaseo(repo);
     const handler = handlerFor(handlers, generateRpc.name);
     const context = { paseo: fake.paseo };
+    await handlerFor(handlers, saveSettingsRpc.name)(
+      saveSettingsRpc.input.parse({ workspaceId: "ws-1", settings: { model: "test/model-2" } }),
+      context,
+    );
 
     const [fromPanel, fromCommand] = await Promise.all([
-      handler(generateRpc.input.parse({ workspaceId: "ws-1", scope: "all" }), context),
+      handler(generateRpc.input.parse({ workspaceId: "ws-1", scope: "all", model: "test/model-2" }), context),
       handler(generateRpc.input.parse({ workspaceId: "ws-1" }), context),
     ]);
 
@@ -368,23 +371,23 @@ describe("walkthrough.generate with a chosen model and language", () => {
     expect(fake.providers).toEqual([]);
   });
 
-  it("uses the daemon's default model when explicitly chosen over a remembered model", async () => {
+  it("requires an explicit or remembered model even when the provider has a default", async () => {
     const repo = await createRepo();
     const { handlers } = load();
     const fake = fakePaseo(repo);
     const context = { paseo: fake.paseo };
+    const generate = handlerFor(handlers, generateRpc.name);
+    await expect(generate(generateRpc.input.parse({ workspaceId: "ws-1" }), context))
+      .rejects.toThrow("Choose a model for the walkthrough first.");
+
     await handlerFor(handlers, saveSettingsRpc.name)(
       saveSettingsRpc.input.parse({ workspaceId: "ws-1", settings: { model: "test/model-2" } }),
       context,
     );
 
     const request = generateRpc.input.parse({ workspaceId: "ws-1", scope: "all", model: null });
-    const { jobId } = generateRpc.output.parse(await handlerFor(handlers, generateRpc.name)(request, context));
-
-    await waitFor(handlers, fake.paseo, jobId, () => fake.providers.length > 0);
-    fake.release(modelAnswer(["h1"]));
-    await waitForTerminal(handlers, fake.paseo, jobId);
-    expect(fake.providers[0]).toBe("test/model-1");
+    await expect(generate(request, context)).rejects.toThrow("Choose a model for the walkthrough first.");
+    expect(fake.providers).toEqual([]);
   });
 });
 
@@ -400,22 +403,26 @@ describe("walkthrough.settings", () => {
     expect(result.settings).toEqual({ scope: "all", model: null, language: "en" });
   });
 
-  it("remembers the choice per workspace", async () => {
-    const { handlers } = load();
+  it("remembers the last choice per workspace after reload", async () => {
+    const { handlers, cleanup } = load();
     const fake = fakePaseo("/tmp");
 
-    const saved = (await handlerFor(handlers, saveSettingsRpc.name)(
-      { workspaceId: "ws-1", settings: { scope: "branch", model: "test/model-2", language: "de" } },
-      { paseo: fake.paseo },
-    )) as { settings: { scope: string; model: string | null; language: string } };
+    const context = { paseo: fake.paseo };
+    const save = handlerFor(handlers, saveSettingsRpc.name);
+    const [, saved] = await Promise.all([
+      save({ workspaceId: "ws-1", settings: { scope: "all", model: "test/model-1", language: "en" } }, context),
+      save({ workspaceId: "ws-1", settings: { scope: "branch", model: "test/model-2", language: "de" } }, context),
+    ].map(async (pending) => saveSettingsRpc.output.parse(await pending)));
     expect(saved.settings).toEqual({ scope: "branch", model: "test/model-2", language: "de" });
+    await cleanup();
 
-    const read = (await handlerFor(handlers, settingsRpc.name)({ workspaceId: "ws-1" }, { paseo: fake.paseo })) as {
+    const reopened = load();
+    const read = (await handlerFor(reopened.handlers, settingsRpc.name)({ workspaceId: "ws-1" }, context)) as {
       settings: { scope: string; model: string | null; language: string };
     };
     expect(read.settings).toEqual({ scope: "branch", model: "test/model-2", language: "de" });
 
-    const other = (await handlerFor(handlers, settingsRpc.name)({ workspaceId: "ws-2" }, { paseo: fake.paseo })) as {
+    const other = (await handlerFor(reopened.handlers, settingsRpc.name)({ workspaceId: "ws-2" }, context)) as {
       settings: { scope: string; model: string | null; language: string };
     };
     expect(other.settings).toEqual({ scope: "all", model: null, language: "en" });
